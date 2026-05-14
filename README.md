@@ -1,3 +1,3 @@
 # Kura
 
-Kura stands for storage in japanese
+Kura stands for "storage" in Japanese (蔵).
