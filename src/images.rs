@@ -3,120 +3,217 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use jiff::civil::DateTime;
 use miette::{IntoDiagnostic, Result, miette};
-use rusqlite::named_params;
-use serde::{Deserialize, Serialize};
+
+use hako::mime_type::MimeType;
 
 use crate::{
     State,
-    types::{CreatedAt, ImageHash},
     tags::Tag,
+    types::{CreatedAt, ImageHash},
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct Image {
+    pub id: i64,
     pub hash: ImageHash,
     pub name: String,
     pub file_path: PathBuf,
     pub created_at: CreatedAt,
-    #[serde(default, skip_deserializing)]
+}
+
+#[derive(Debug)]
+pub struct ImageWithTags {
+    pub image: Image,
     pub tags: Vec<Tag>,
 }
 
+fn parse_created_at(s: String) -> Result<CreatedAt> {
+    DateTime::strptime("%Y-%m-%d %H:%M:%S", &s)
+        .map(CreatedAt)
+        .into_diagnostic()
+}
+
 impl Image {
-    pub fn create_table(state: &State) -> Result<()> {
-        state
-            .db
-            .execute(
-                "CREATE TABLE IF NOT EXISTS images (
-                hash TEXT PRIMARY KEY,
+    pub fn mime_type(&self) -> Option<MimeType> {
+        self.file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|e| MimeType::from_extension(e).ok())
+    }
+
+    pub async fn create_table(state: &State) -> Result<()> {
+        sqlx::query!(
+            "CREATE TABLE IF NOT EXISTS images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            )",
-                (),
-            )
-            .into_diagnostic()?;
+            )"
+        )
+        .execute(&state.db_pool)
+        .await
+        .into_diagnostic()?;
+
         Ok(())
     }
 
-    pub fn all(state: &State) -> Result<Vec<Image>> {
-        let mut img_stmt = state
-            .db
-            .prepare("SELECT hash, name, file_path, created_at FROM images")
-            .into_diagnostic()?;
-        let mut images: Vec<Image> =
-            serde_rusqlite::from_rows(img_stmt.query([]).into_diagnostic()?)
-                .collect::<Result<_, _>>()
-                .into_diagnostic()?;
+    pub async fn all(state: &State) -> Result<Vec<ImageWithTags>> {
+        let rows = sqlx::query!(
+            "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,
+                t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
+             FROM images i
+             LEFT JOIN tags t ON t.image_hash = i.hash
+             ORDER BY i.hash"
+        )
+        .fetch_all(&state.db_pool)
+        .await
+        .into_diagnostic()?;
 
-        let mut tags_by_hash = Tag::all_by_hash(state)?;
+        let mapped = rows
+            .into_iter()
+            .map(|row| -> Result<(Image, Option<Tag>)> {
+                let tag = row
+                    .tag_id
+                    .map(|id| -> Result<Tag> {
+                        Ok(Tag {
+                            id,
+                            image_hash: ImageHash(row.tag_image_hash.unwrap()),
+                            tag: row.tag.unwrap(),
+                            created_at: parse_created_at(row.tag_created_at.unwrap())?,
+                        })
+                    })
+                    .transpose()?;
+                Ok((
+                    Image {
+                        id: row.id.unwrap(),
+                        hash: ImageHash(row.hash),
+                        name: row.name,
+                        file_path: PathBuf::from(row.file_path),
+                        created_at: parse_created_at(row.created_at)?,
+                    },
+                    tag,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        for img in &mut images {
-            if let Some(tags) = tags_by_hash.remove(&img.hash) {
-                img.tags = tags;
-            }
-        }
-
-        Ok(images)
+        Ok(Self::collect_images(mapped))
     }
 
-    pub fn find_by_file_path(state: &State, file_path: &Path) -> Result<Option<Image>> {
+    pub async fn find_by_file_path(
+        state: &State,
+        file_path: &Path,
+    ) -> Result<Option<ImageWithTags>> {
         let path_str = file_path
             .to_str()
             .ok_or_else(|| miette!("Invalid file path"))?;
 
-        Self::find_by_field(state, "file_path", path_str)
-    }
-
-    fn find_by_field(state: &State, field: &str, value: &str) -> Result<Option<Image>> {
-        let sql =
-            format!("SELECT hash, name, file_path, created_at FROM images WHERE {field} = :value");
-        let mut img_stmt = state.db.prepare(&sql).into_diagnostic()?;
-        let mut image = serde_rusqlite::from_rows::<Image>(
-            img_stmt
-                .query(named_params! { ":value": value })
-                .into_diagnostic()?,
+        let rows = sqlx::query!(
+            "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,
+                t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
+             FROM images i
+             LEFT JOIN tags t ON t.image_hash = i.hash
+             WHERE i.file_path = ?",
+            path_str
         )
-        .next()
-        .transpose()
+        .fetch_all(&state.db_pool)
+        .await
         .into_diagnostic()?;
 
-        if let Some(ref mut img) = image {
-            let mut tag_stmt = state
-                .db
-                .prepare(
-                    "SELECT id, image_hash, tag, created_at FROM tags WHERE image_hash = :hash",
-                )
-                .into_diagnostic()?;
-            img.tags = serde_rusqlite::from_rows(
-                tag_stmt
-                    .query(named_params! { ":hash": &img.hash })
-                    .into_diagnostic()?,
-            )
-            .collect::<Result<_, _>>()
-            .into_diagnostic()?;
-        }
+        let mapped = rows
+            .into_iter()
+            .map(|row| -> Result<(Image, Option<Tag>)> {
+                let tag = row
+                    .tag_id
+                    .map(|id| -> Result<Tag> {
+                        Ok(Tag {
+                            id,
+                            image_hash: ImageHash(row.tag_image_hash.unwrap()),
+                            tag: row.tag.unwrap(),
+                            created_at: parse_created_at(row.tag_created_at.unwrap())?,
+                        })
+                    })
+                    .transpose()?;
+                Ok((
+                    Image {
+                        id: row.id,
+                        hash: ImageHash(row.hash),
+                        name: row.name,
+                        file_path: PathBuf::from(row.file_path),
+                        created_at: parse_created_at(row.created_at)?,
+                    },
+                    tag,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        Ok(image)
+        Ok(Self::collect_images(mapped).into_iter().next())
     }
 
-    pub fn delete(&self, state: &State) -> Result<()> {
-        state
-            .db
-            .execute(
-                "DELETE FROM tags WHERE image_hash = :hash",
-                named_params! { ":hash": self.hash },
-            )
+    pub async fn find_by_hash_or_name(
+        state: &State,
+        hash_or_name: &str,
+    ) -> Result<Option<ImageWithTags>> {
+        let rows = sqlx::query!(
+            "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,
+                t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
+             FROM images i
+             LEFT JOIN tags t ON t.image_hash = i.hash
+             WHERE i.hash = ? OR i.name = ?",
+            hash_or_name,
+            hash_or_name
+        )
+        .fetch_all(&state.db_pool)
+        .await
+        .into_diagnostic()?;
+
+        let mapped = rows
+            .into_iter()
+            .map(|row| -> Result<(Image, Option<Tag>)> {
+                let tag = row
+                    .tag_id
+                    .map(|id| -> Result<Tag> {
+                        Ok(Tag {
+                            id,
+                            image_hash: ImageHash(row.tag_image_hash.unwrap()),
+                            tag: row.tag.unwrap(),
+                            created_at: parse_created_at(row.tag_created_at.unwrap())?,
+                        })
+                    })
+                    .transpose()?;
+                Ok((
+                    Image {
+                        id: row.id,
+                        hash: ImageHash(row.hash),
+                        name: row.name,
+                        file_path: PathBuf::from(row.file_path),
+                        created_at: parse_created_at(row.created_at)?,
+                    },
+                    tag,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self::collect_images(mapped).into_iter().next())
+    }
+
+    pub async fn delete(&self, state: &State) -> Result<()> {
+        let mut tx = state.db_pool.begin().await.into_diagnostic()?;
+        let hash = self.hash.as_str();
+
+        sqlx::query!("DELETE FROM tags WHERE image_hash = ?", hash)
+            .execute(&mut *tx)
+            .await
             .into_diagnostic()?;
 
-        state
-            .db
-            .execute(
-                "DELETE FROM images WHERE hash = :hash",
-                named_params! { ":hash": self.hash },
-            )
+        sqlx::query!("DELETE FROM images WHERE hash = ?", hash)
+            .execute(&mut *tx)
+            .await
             .into_diagnostic()?;
+
+        tx.commit().await.into_diagnostic()?;
 
         if fs::exists(&self.file_path).into_diagnostic()? {
             fs::remove_file(&self.file_path).into_diagnostic()?;
@@ -125,16 +222,26 @@ impl Image {
         Ok(())
     }
 
-    pub fn find_by_hash_or_name(state: &State, hash_or_name: &str) -> Result<Option<Image>> {
-        if let Some(img) = Self::find_by_field(state, "hash", hash_or_name)? {
-            return Ok(Some(img));
+    fn collect_images(rows: Vec<(Image, Option<Tag>)>) -> Vec<ImageWithTags> {
+        let mut images: Vec<ImageWithTags> = Vec::new();
+
+        for (img, tag) in rows {
+            if images.last().is_none_or(|last| last.image.hash != img.hash) {
+                images.push(ImageWithTags {
+                    image: img,
+                    tags: vec![],
+                });
+            }
+            if let Some(t) = tag {
+                images.last_mut().unwrap().tags.push(t);
+            }
         }
 
-        Self::find_by_field(state, "name", hash_or_name)
+        images
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct NewImage<'a> {
     hash: ImageHash,
     name: &'a str,
@@ -149,15 +256,20 @@ impl<'a> NewImage<'a> {
             file_path,
         }
     }
-}
 
-impl<'a> NewImage<'a> {
-    pub fn insert(&self, state: &State) -> Result<()> {
-        state.db.execute(
-            "INSERT INTO images (hash, name, file_path, created_at) \
-                 VALUES (:hash, :name, :file_path, datetime('now'))",
-            named_params! { ":hash": self.hash, ":name": self.name, ":file_path": self.file_path },
-        ).into_diagnostic()?;
-        Ok(())
+    pub async fn insert(&self, state: &State) -> Result<i64> {
+        let hash = self.hash.as_str();
+
+        let result = sqlx::query!(
+            "INSERT INTO images (hash, name, file_path, created_at) VALUES (?, ?, ?, datetime('now'))",
+            hash,
+            self.name,
+            self.file_path
+        )
+        .execute(&state.db_pool)
+        .await
+        .into_diagnostic()?;
+
+        Ok(result.last_insert_rowid())
     }
 }

@@ -5,89 +5,42 @@ use std::{
     path::PathBuf,
 };
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser};
+use hako::mime_type::MimeType;
 use kura::{
     State,
-    types::ImageHash,
+    cli::{Cli, Commands},
     images::{Image, NewImage},
     tags::{NewTag, Tag},
+    tui::KuraApp,
+    types::ImageHash,
 };
 use miette::{IntoDiagnostic, Result, miette};
-use rusqlite::named_params;
 use sha2::{Digest, Sha256};
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
+#[tokio::main]
+async fn main() -> Result<()> {
+    let state = State::new()?;
 
-#[derive(Subcommand, Debug)]
-enum Commands {
-    Add {
-        name: String,
-        #[arg(short, long)]
-        file_path: Option<PathBuf>,
-        #[arg(short, long)]
-        url: Option<String>,
-    },
-    Remove {
-        hash_or_name: Option<String>,
-        file_path: Option<PathBuf>,
-    },
-    List {
-        #[arg(short, long)]
-        tag: Option<String>,
-    },
-    Tag {
-        hash_or_name: String,
-        tag: String,
-    },
-    Untag {
-        hash_or_name: String,
-        tag: String,
-    },
-    Nuke,
-    Serve {
-        #[arg(short, long, default_value_t = 7878)]
-        port: u16,
-    },
-}
-
-fn main() -> Result<()> {
-    let mut state = State::new()?;
-
-    Image::create_table(&state)?;
-    Tag::create_table(&state)?;
+    Image::create_table(&state).await?;
+    Tag::create_table(&state).await?;
 
     let cli = Cli::parse();
 
     match &cli.command {
-        Some(Commands::Nuke) => state.prune()?,
-        Some(command) => handle_command(&mut state, command)?,
-        None => {
-            let mut cmd = Cli::command();
-            cmd.print_help().into_diagnostic()?;
-            println!();
+        Some(Commands::Tui) => {
+            hako::run(KuraApp::new(state).await?).await.into_diagnostic()?;
         }
-    }
-
-    Ok(())
-}
-
-fn handle_command(state: &mut State, command: &Commands) -> Result<()> {
-    match command {
-        Commands::Nuke => unreachable!("Command is not handled"),
-        Commands::Add {
+        Some(Commands::Nuke) => state.prune().await?,
+        Some(Commands::Add {
             name,
             file_path,
             url,
-        } => {
+        }) => {
             let (data, extension) = match (file_path, url) {
                 (Some(_), Some(_)) => return Err(miette!("Cannot provide both --file and --url")),
                 (None, None) => return Err(miette!("Must provide either --file or --url")),
-                (None, Some(url)) => fetch_remote_image(url)?,
+                (None, Some(url)) => fetch_remote_image(url).await?,
                 (Some(file_path), None) => get_local_image(file_path)?,
             };
 
@@ -103,100 +56,107 @@ fn handle_command(state: &mut State, command: &Commands) -> Result<()> {
 
             let hash = ImageHash(hex::encode(Sha256::digest(data)));
             let new_image = NewImage::new(hash.clone(), name, dest.to_str().unwrap());
-            new_image.insert(state)?;
+            new_image.insert(&state).await?;
             println!("Added: {name} ({hash})");
         }
-        Commands::Remove {
+        Some(Commands::Remove {
             hash_or_name,
             file_path,
-        } => {
+        }) => {
             let image = if let Some(hash_or_name) = hash_or_name {
-                Image::find_by_hash_or_name(state, hash_or_name)?
+                Image::find_by_hash_or_name(&state, hash_or_name).await?
             } else if let Some(file_path) = file_path {
                 let file_path = if file_path.is_absolute() {
                     file_path.clone()
                 } else {
                     std::env::current_dir().into_diagnostic()?.join(file_path)
                 };
-                Image::find_by_file_path(state, &file_path)?
+                Image::find_by_file_path(&state, &file_path).await?
             } else {
                 return Err(miette!("Must provide hash, name, or file_path to remove"));
             };
 
             let image = image.ok_or_else(|| miette!("Image not found"))?;
-            image.delete(state)?;
-            println!("Removed: {} ({})", image.name, image.hash);
+            image.image.delete(&state).await?;
+            println!("Removed: {} ({})", image.image.name, image.image.hash);
         }
-        Commands::List { tag } => {
-            let images = Image::all(state)?;
-
+        Some(Commands::List { tag }) => {
+            let images = Image::all(&state).await?;
             println!("Searching for {tag:#?}, result:");
             println!("{images:#?}");
         }
-        Commands::Serve { port } => {
+        Some(Commands::Tag { hash_or_name, tag }) => {
+            let image = Image::find_by_hash_or_name(&state, hash_or_name)
+                .await?
+                .ok_or_else(|| miette!("Image not found"))?;
+
+            NewTag::new(&image.image.hash, tag).insert(&state).await?;
+            println!("Tagged {} with {}", image.image.name, tag);
+        }
+        Some(Commands::Untag { hash_or_name, tag }) => {
+            let image = Image::find_by_hash_or_name(&state, hash_or_name)
+                .await?
+                .ok_or_else(|| miette!("Image not found"))?;
+
+            let hash = image.image.hash.as_str();
+            let tag = tag.as_str();
+            sqlx::query!(
+                "DELETE FROM tags WHERE image_hash = ? AND tag = ?",
+                hash,
+                tag
+            )
+            .execute(&state.db_pool)
+            .await
+            .into_diagnostic()?;
+
+            println!("Removed tag '{}' from {}", tag, image.image.name);
+        }
+        Some(Commands::Serve { port }) => {
             let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
-
             for stream in listener.incoming() {
-                let stream = stream.unwrap();
-
-                handle_connection(stream);
+                handle_connection(stream.unwrap());
             }
         }
-        Commands::Tag { hash_or_name, tag } => {
-            let image = Image::find_by_hash_or_name(state, hash_or_name)?
-                .ok_or_else(|| miette!("Image not found"))?;
-
-            let new_tag = NewTag::new(&image.hash, tag);
-            new_tag.insert(state)?;
-
-            println!("Tagged {} with {}", image.name, tag);
-        }
-        Commands::Untag { hash_or_name, tag } => {
-            let image = Image::find_by_hash_or_name(state, hash_or_name)?
-                .ok_or_else(|| miette!("Image not found"))?;
-
-            state
-                .db
-                .execute(
-                    "DELETE FROM tags WHERE image_hash = :hash AND tag = :tag",
-                    named_params! { ":hash": image.hash, ":tag": tag },
-                )
-                .into_diagnostic()?;
-
-            println!("Removed tag '{}' from {}", tag, image.name);
+        None => {
+            let mut cmd = Cli::command();
+            cmd.print_help().into_diagnostic()?;
+            println!();
         }
     }
 
     Ok(())
 }
 
-fn get_local_image(file_path: &PathBuf) -> Result<(Vec<u8>, String), miette::Error> {
+fn get_local_image(file_path: &PathBuf) -> Result<(Vec<u8>, String)> {
     let file_path = if file_path.is_absolute() {
         file_path.clone()
     } else {
         std::env::current_dir().into_diagnostic()?.join(file_path)
     };
+
     if fs::exists(&file_path).is_ok_and(|x| !x) {
         return Err(miette!("File does not exist"));
     }
+
     let extension = file_path
         .extension()
         .and_then(|ext| ext.to_str())
-        .filter(|ext| matches!(*ext, "png" | "jpg" | "jpeg" | "gif"))
+        .filter(|ext| MimeType::from_extension(ext).is_ok())
         .ok_or_else(|| miette!("File needs to be a valid image"))?
         .to_string();
     let data = fs::read(&file_path).into_diagnostic()?;
     Ok((data, extension))
 }
 
-fn fetch_remote_image(url: &String) -> Result<(Vec<u8>, String), miette::Error> {
-    let resp = reqwest::blocking::get(url).into_diagnostic()?;
+async fn fetch_remote_image(url: &String) -> Result<(Vec<u8>, String)> {
+    let resp = reqwest::get(url).await.into_diagnostic()?;
     let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).cloned();
-    let data = resp.bytes().into_diagnostic()?.to_vec();
+    let data = resp.bytes().await.into_diagnostic()?.to_vec();
+
     let extension = PathBuf::from(url.split('?').next().unwrap_or(url))
         .extension()
         .and_then(|ext| ext.to_str())
-        .filter(|ext| matches!(*ext, "png" | "jpg" | "jpeg" | "gif"))
+        .filter(|ext| MimeType::from_extension(ext).is_ok())
         .map(|s| s.to_string())
         .or_else(|| {
             content_type.and_then(|ct| {
@@ -215,23 +175,19 @@ fn fetch_remote_image(url: &String) -> Result<(Vec<u8>, String), miette::Error> 
 // TODO: Allow people to use server with this program
 fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&stream);
-
     let request_line = buf_reader.lines().next().unwrap().unwrap();
 
     if request_line == "GET / HTTP/1.1" {
         let status_line = "HTTP/1.1 200 OK";
         let contents = "{\"image\": \"file_path.jpg\"}";
         let length = contents.len();
-
         let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
         stream.write_all(response.as_bytes()).unwrap();
     } else {
         let status_line = "HTTP/1.1 404 NOT FOUND";
         let contents = "Not here brev";
         let length = contents.len();
-
         let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-
         stream.write_all(response.as_bytes()).unwrap();
     }
 }

@@ -1,14 +1,8 @@
 use std::fmt;
 
 use jiff::civil::DateTime;
-use rusqlite::{
-    Result as RusqliteResult,
-    types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
-};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageHash(pub String);
 
 impl std::hash::Hash for ImageHash {
@@ -31,35 +25,5 @@ impl fmt::Display for ImageHash {
     }
 }
 
-impl ToSql for ImageHash {
-    fn to_sql(&self) -> RusqliteResult<ToSqlOutput<'_>> {
-        self.0.to_sql()
-    }
-}
-
-impl FromSql for ImageHash {
-    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        String::column_result(value).map(ImageHash)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CreatedAt(DateTime);
-
-impl ToSql for CreatedAt {
-    fn to_sql(&self) -> RusqliteResult<ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::from(
-            self.0.strftime("%Y-%m-%d %H:%M:%S").to_string(),
-        ))
-    }
-}
-
-impl FromSql for CreatedAt {
-    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        let s = String::column_result(value)?;
-        DateTime::strptime("%Y-%m-%d %H:%M:%S", &s)
-            .map(CreatedAt)
-            .map_err(|e| rusqlite::types::FromSqlError::Other(Box::new(e)))
-    }
-}
+#[derive(Debug, Clone)]
+pub struct CreatedAt(pub DateTime);
