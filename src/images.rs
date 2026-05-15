@@ -199,6 +199,35 @@ impl Image {
         Ok(Self::collect_images(mapped).into_iter().next())
     }
 
+    pub async fn rename(&mut self, state: &State, new_name: &str) -> Result<()> {
+        let new_file_path = self
+            .file_path
+            .with_file_name(new_name.replace(' ', "-").to_lowercase())
+            .with_extension(self.file_path.extension().unwrap_or_default());
+
+        if fs::exists(&new_file_path).into_diagnostic()? {
+            return Err(miette!("An image with name {} already exists", new_name));
+        }
+
+        let new_path_str = new_file_path.to_str().unwrap();
+        let hash = self.hash.as_str();
+
+        sqlx::query!(
+            "UPDATE images SET name = ?, file_path = ? WHERE hash = ?",
+            new_name,
+            new_path_str,
+            hash
+        )
+        .execute(&state.db_pool)
+        .await
+        .into_diagnostic()?;
+
+        fs::rename(&self.file_path, &new_file_path).into_diagnostic()?;
+        self.name = new_name.to_string();
+        self.file_path = new_file_path;
+        Ok(())
+    }
+
     pub async fn delete(&self, state: &State) -> Result<()> {
         let mut tx = state.db_pool.begin().await.into_diagnostic()?;
         let hash = self.hash.as_str();

@@ -34,6 +34,10 @@ pub enum Commands {
         hash_or_name: String,
         tag: String,
     },
+    Rename {
+        old_name: String,
+        new_name: String,
+    },
     Tui,
     Nuke,
     Serve {

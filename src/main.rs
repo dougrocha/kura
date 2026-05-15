@@ -111,6 +111,13 @@ async fn main() -> Result<()> {
 
             println!("Removed tag '{}' from {}", tag, image.image.name);
         }
+        Some(Commands::Rename { old_name, new_name }) => {
+            let mut image = Image::find_by_hash_or_name(&state, old_name)
+                .await?
+                .ok_or_else(|| miette!("Image not found"))?;
+            image.image.rename(&state, new_name).await?;
+            println!("Renamed {} → {}", old_name, new_name);
+        }
         Some(Commands::Serve { port }) => {
             let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
             for stream in listener.incoming() {
@@ -148,27 +155,18 @@ fn get_local_image(file_path: &PathBuf) -> Result<(Vec<u8>, String)> {
     Ok((data, extension))
 }
 
-async fn fetch_remote_image(url: &String) -> Result<(Vec<u8>, String)> {
+async fn fetch_remote_image(url: &str) -> Result<(Vec<u8>, String)> {
     let resp = reqwest::get(url).await.into_diagnostic()?;
-    let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).cloned();
+    if !resp.status().is_success() {
+        return Err(miette!("Failed to fetch image: HTTP {}", resp.status()));
+    }
     let data = resp.bytes().await.into_diagnostic()?.to_vec();
 
-    let extension = PathBuf::from(url.split('?').next().unwrap_or(url))
+    let extension = MimeType::from_bytes(&data)
+        .into_diagnostic()?
         .extension()
-        .and_then(|ext| ext.to_str())
-        .filter(|ext| MimeType::from_extension(ext).is_ok())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            content_type.and_then(|ct| {
-                ct.to_str().ok().and_then(|ct| match ct {
-                    "image/png" => Some("png".to_string()),
-                    "image/jpeg" | "image/jpg" => Some("jpg".to_string()),
-                    "image/gif" => Some("gif".to_string()),
-                    _ => None,
-                })
-            })
-        })
-        .ok_or_else(|| miette!("Could not determine image extension from URL or Content-Type"))?;
+        .to_string();
+
     Ok((data, extension))
 }
 

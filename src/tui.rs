@@ -1,10 +1,10 @@
-use hako::clipboard::ClipboardContext;
+use hako::clipboard::clipboard;
 use hako::{
-    App, Event, Frame, KeyCode,
+    App, Event, Frame, KeyCode, ScrollList,
     image::{Picker, ResizeRequest, StatefulImage, StatefulProtocol, ThreadProtocol},
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use miette::Result;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -18,7 +18,7 @@ pub struct KuraApp {
     #[allow(dead_code)]
     state: State,
     images: Vec<ImageWithTags>,
-    list_state: ListState,
+    scroll_list: ScrollList,
 
     should_quit: bool,
 
@@ -37,10 +37,7 @@ impl KuraApp {
     pub async fn new(state: State) -> Result<Self> {
         let images = Image::all(&state).await?;
 
-        let mut list_state = ListState::default();
-        if !images.is_empty() {
-            list_state.select(Some(0));
-        }
+        let scroll_list = ScrollList::new(images.len());
 
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
 
@@ -54,7 +51,7 @@ impl KuraApp {
         let mut app = Self {
             state,
             images,
-            list_state,
+            scroll_list,
             image_protocol,
             proto_rx,
             proto_tx,
@@ -69,7 +66,7 @@ impl KuraApp {
 
     fn load_selected_image(&mut self) {
         let Some(path) = self
-            .list_state
+            .scroll_list
             .selected()
             .and_then(|i| self.images.get(i))
             .map(|img| img.image.file_path.clone())
@@ -97,37 +94,22 @@ impl KuraApp {
     }
 
     fn selected(&self) -> Option<&ImageWithTags> {
-        self.list_state.selected().and_then(|i| self.images.get(i))
+        self.scroll_list.selected().and_then(|i| self.images.get(i))
     }
 
     fn select_next(&mut self) {
-        if self.images.is_empty() {
-            return;
-        }
-        let next = self
-            .list_state
-            .selected()
-            .map_or(0, |i| if i + 1 >= self.images.len() { 0 } else { i + 1 });
-        self.list_state.select(Some(next));
+        self.scroll_list.scroll_down();
         self.load_selected_image();
     }
 
     fn select_prev(&mut self) {
-        if self.images.is_empty() {
-            return;
-        }
-
-        let prev = self
-            .list_state
-            .selected()
-            .map_or(0, |i| if i == 0 { self.images.len() - 1 } else { i - 1 });
-        self.list_state.select(Some(prev));
+        self.scroll_list.scroll_up();
         self.load_selected_image();
     }
 
     fn copy_selected_to_clipboard(&self) {
         let Some(img) = self.selected() else { return };
-        let Ok(ctx) = ClipboardContext::new() else {
+        let Ok(ctx) = clipboard() else {
             return;
         };
         let _ = ctx.write_image(&img.image.file_path);
@@ -190,7 +172,7 @@ impl App for KuraApp {
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
-        frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
+        frame.render_stateful_widget(list, chunks[0], self.scroll_list.state());
 
         let is_animated = self
             .selected()
