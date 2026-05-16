@@ -4,7 +4,7 @@ use hako::{
     image::{Picker, ResizeRequest, StatefulImage, StatefulProtocol, ThreadProtocol},
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Line, List, ListItem, Paragraph, Span},
 };
 use miette::Result;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -14,6 +14,10 @@ use crate::{
     images::{Image, ImageWithTags},
 };
 
+pub enum Action {
+    Rename { index: usize, new_name: String },
+}
+
 pub struct KuraApp {
     #[allow(dead_code)]
     state: State,
@@ -21,6 +25,9 @@ pub struct KuraApp {
     scroll_list: ScrollList,
 
     should_quit: bool,
+
+    rename_input: Option<String>,
+    rename_error: Option<String>,
 
     image_protocol: ThreadProtocol,
     picker: Picker,
@@ -58,6 +65,8 @@ impl KuraApp {
             resize_rx,
             picker,
             should_quit: false,
+            rename_input: None,
+            rename_error: None,
         };
 
         app.load_selected_image();
@@ -124,27 +133,61 @@ impl KuraApp {
 }
 
 impl App for KuraApp {
+    type Action = Action;
+
     fn should_quit(&self) -> bool {
         self.should_quit
     }
 
-    fn handle_event(&mut self, event: &Event) {
+    fn handle_event(&mut self, event: &Event) -> Option<Action> {
         match event {
-            Event::Key(key) => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-                KeyCode::Char('j') | KeyCode::Down => self.select_next(),
-                KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
-                KeyCode::Enter => self.copy_selected_to_clipboard(),
-                KeyCode::Char('o') => self.open_selected(),
-                _ => {}
-            },
+            Event::Key(key) => {
+                if self.rename_input.is_some() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.rename_input = None;
+                            self.rename_error = None;
+                        }
+                        KeyCode::Enter => {
+                            if let (Some(buf), Some(index)) =
+                                (self.rename_input.clone(), self.scroll_list.selected())
+                            {
+                                return Some(Action::Rename { index, new_name: buf });
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(buf) = &mut self.rename_input {
+                                buf.pop();
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(buf) = &mut self.rename_input {
+                                buf.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                        KeyCode::Char('j') | KeyCode::Down => self.select_next(),
+                        KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
+                        KeyCode::Enter => self.copy_selected_to_clipboard(),
+                        KeyCode::Char('o') => self.open_selected(),
+                        KeyCode::Char('r') => {
+                            if let Some(img) = self.selected() {
+                                self.rename_input = Some(img.image.name.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Event::Tick => {
-                // Pick up freshly loaded protocols
+                self.rename_error = None;
                 while let Ok(protocol) = self.proto_rx.try_recv() {
                     self.image_protocol.replace_protocol(protocol);
                 }
-
-                // Pick up completed resize/encode responses
                 while let Ok(request) = self.resize_rx.try_recv() {
                     if let Ok(response) = request.resize_encode() {
                         self.image_protocol.update_resized_protocol(response);
@@ -152,6 +195,23 @@ impl App for KuraApp {
                 }
             }
             _ => {}
+        }
+        None
+    }
+
+    async fn on_action(&mut self, action: Action) {
+        match action {
+            Action::Rename { index, new_name } => {
+                match self.images[index].image.rename(&self.state, &new_name).await {
+                    Ok(_) => {
+                        self.rename_input = None;
+                        self.load_selected_image();
+                    }
+                    Err(e) => {
+                        self.rename_error = Some(e.to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -172,7 +232,27 @@ impl App for KuraApp {
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
-        frame.render_stateful_widget(list, chunks[0], self.scroll_list.state());
+        if let Some(buf) = &self.rename_input {
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(4)])
+                .split(chunks[0]);
+
+            frame.render_stateful_widget(list, left_chunks[0], self.scroll_list.state());
+
+            let cursor_line = Line::from(format!("{buf}|"));
+            let error_line = if let Some(err) = &self.rename_error {
+                Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+            } else {
+                Line::from("")
+            };
+
+            let rename_box = Paragraph::new(vec![cursor_line, error_line])
+                .block(Block::default().borders(Borders::ALL).title("Rename"));
+            frame.render_widget(rename_box, left_chunks[1]);
+        } else {
+            frame.render_stateful_widget(list, chunks[0], self.scroll_list.state());
+        }
 
         let is_animated = self
             .selected()
