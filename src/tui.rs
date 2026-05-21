@@ -8,9 +8,11 @@ use hako::{
 };
 use miette::Result;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     State,
+    image_protocol_cache::ImageProtocolCache,
     images::{Image, ImageWithTags},
     tags::NewTag,
 };
@@ -39,12 +41,15 @@ pub struct KuraApp {
     image_protocol: ThreadProtocol,
     picker: Picker,
     /// Sends new protocols to the image loader task
-    proto_tx: UnboundedSender<StatefulProtocol>,
+    proto_tx: UnboundedSender<(usize, StatefulProtocol)>,
     /// Receives fully loaded StatefulProtocols from the image loader task
-    proto_rx: UnboundedReceiver<StatefulProtocol>,
+    proto_rx: UnboundedReceiver<(usize, StatefulProtocol)>,
 
     /// Receives encoded ResizeResponses from the background worker
     resize_rx: UnboundedReceiver<ResizeRequest>,
+
+    protocol_cache: ImageProtocolCache,
+    image_cancellation_token: CancellationToken,
 }
 
 impl KuraApp {
@@ -58,7 +63,7 @@ impl KuraApp {
         let (resize_tx, resize_rx) = unbounded_channel::<ResizeRequest>();
 
         // Channel: image loader task sends StatefulProtocol → proto_rx
-        let (proto_tx, proto_rx) = unbounded_channel::<StatefulProtocol>();
+        let (proto_tx, proto_rx) = unbounded_channel::<(usize, StatefulProtocol)>();
 
         let image_protocol = ThreadProtocol::new(resize_tx, None);
 
@@ -77,6 +82,8 @@ impl KuraApp {
             tag_input: None,
             untag_input: None,
             tag_error: None,
+            protocol_cache: ImageProtocolCache::new(),
+            image_cancellation_token: CancellationToken::new(),
         };
 
         app.load_selected_image();
@@ -84,30 +91,67 @@ impl KuraApp {
     }
 
     fn load_selected_image(&mut self) {
-        let Some(path) = self
-            .scroll_list
-            .selected()
-            .and_then(|i| self.images.get(i))
-            .map(|img| img.image.file_path.clone())
-        else {
+        let Some(selected) = self.scroll_list.selected() else {
             return;
         };
 
+        self.image_cancellation_token.cancel();
+        self.image_cancellation_token = CancellationToken::new();
+
         self.image_protocol.empty_protocol();
 
+        if let Some(protocol) = self.protocol_cache.take(selected) {
+            self.image_protocol.replace_protocol(protocol);
+        } else {
+            self.spawn_image_load(selected);
+        }
+
+        let neighbors: Vec<usize> = [
+            selected.wrapping_sub(2),
+            selected.wrapping_sub(1),
+            selected + 1,
+            selected + 2,
+        ]
+        .into_iter()
+        .filter(|&i| i < self.images.len() && !self.protocol_cache.contains(i))
+        .collect();
+
+        for index in neighbors {
+            self.spawn_image_load(index);
+        }
+    }
+
+    fn spawn_image_load(&self, index: usize) {
+        let Some(img) = self.images.get(index) else {
+            return;
+        };
+
+        let path = img.image.file_path.clone();
+        let hash = img.image.hash.as_str().to_string();
         let picker = self.picker.clone();
         let tx = self.proto_tx.clone();
+        let image_cache = self.state.image_cache.clone();
+        let token = self.image_cancellation_token.clone();
 
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                image::open(&path)
+                if token.is_cancelled() {
+                    return None;
+                }
+                image_cache
+                    .load_or_cache(&hash, &path)
                     .ok()
-                    .map(|dyn_img| picker.new_resize_protocol(dyn_img))
+                    .and_then(|dyn_img| {
+                        if token.is_cancelled() {
+                            return None;
+                        }
+                        Some(picker.new_resize_protocol(dyn_img))
+                    })
             })
             .await;
 
             if let Ok(Some(protocol)) = result {
-                let _ = tx.send(protocol);
+                let _ = tx.send((index, protocol));
             }
         });
     }
@@ -117,13 +161,19 @@ impl KuraApp {
     }
 
     fn select_next(&mut self) {
+        let before = self.scroll_list.selected();
         self.scroll_list.scroll_down();
-        self.load_selected_image();
+        if self.scroll_list.selected() != before {
+            self.load_selected_image();
+        }
     }
 
     fn select_prev(&mut self) {
+        let before = self.scroll_list.selected();
         self.scroll_list.scroll_up();
-        self.load_selected_image();
+        if self.scroll_list.selected() != before {
+            self.load_selected_image();
+        }
     }
 
     fn copy_selected_to_clipboard(&self) {
@@ -168,7 +218,10 @@ impl App for KuraApp {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) => {
                             if let Some(index) = self.scroll_list.selected() {
-                                return Some(Action::Rename { index, new_name: val });
+                                return Some(Action::Rename {
+                                    index,
+                                    new_name: val,
+                                });
                             }
                         }
                         TextInputEvent::Cancelled => {
@@ -215,15 +268,11 @@ impl App for KuraApp {
                                 self.rename_input = Some(TextInput::new(img.image.name.clone()));
                             }
                         }
-                        KeyCode::Char('t') => {
-                            if self.selected().is_some() {
-                                self.tag_input = Some(TextInput::default());
-                            }
+                        KeyCode::Char('t') if self.selected().is_some() => {
+                            self.tag_input = Some(TextInput::default());
                         }
-                        KeyCode::Char('u') => {
-                            if self.selected().is_some() {
-                                self.untag_input = Some(TextInput::default());
-                            }
+                        KeyCode::Char('u') if self.selected().is_some() => {
+                            self.untag_input = Some(TextInput::default());
                         }
                         _ => {}
                     }
@@ -231,8 +280,13 @@ impl App for KuraApp {
             }
             Event::Tick => {
                 self.rename_error = None;
-                while let Ok(protocol) = self.proto_rx.try_recv() {
-                    self.image_protocol.replace_protocol(protocol);
+                let selected = self.scroll_list.selected().unwrap_or(0);
+                while let Ok((index, protocol)) = self.proto_rx.try_recv() {
+                    if index == selected {
+                        self.image_protocol.replace_protocol(protocol);
+                    } else {
+                        self.protocol_cache.insert(index, protocol);
+                    }
                 }
                 while let Ok(request) = self.resize_rx.try_recv() {
                     if let Ok(response) = request.resize_encode() {
@@ -248,7 +302,11 @@ impl App for KuraApp {
     async fn on_action(&mut self, action: Action) {
         match action {
             Action::Rename { index, new_name } => {
-                match self.images[index].image.rename(&self.state, &new_name).await {
+                match self.images[index]
+                    .image
+                    .rename(&self.state, &new_name)
+                    .await
+                {
                     Ok(_) => {
                         self.rename_input = None;
                         self.reload_images().await;
@@ -380,7 +438,10 @@ impl App for KuraApp {
 
         let tags_text = if let Some(img) = self.selected() {
             if img.tags.is_empty() {
-                Line::from(Span::styled("no tags", Style::default().fg(Color::DarkGray)))
+                Line::from(Span::styled(
+                    "no tags",
+                    Style::default().fg(Color::DarkGray),
+                ))
             } else {
                 let spans: Vec<Span> = img
                     .tags
@@ -398,7 +459,9 @@ impl App for KuraApp {
             Line::from("")
         };
 
-        let tags_block = Block::default().borders(Borders::ALL).title("Tags  [t] add  [u] remove");
+        let tags_block = Block::default()
+            .borders(Borders::ALL)
+            .title("Tags  [t] add  [u] remove");
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);

@@ -1,5 +1,7 @@
 use std::{fs, path::PathBuf};
 
+use image_cache::ImageCache;
+
 use directories::{ProjectDirs, UserDirs};
 use miette::{Context, IntoDiagnostic, Result};
 use sqlx::SqlitePool;
@@ -7,6 +9,8 @@ use sqlx::sqlite::SqliteConnectOptions;
 use std::str::FromStr;
 
 pub mod cli;
+pub mod image_cache;
+pub mod image_protocol_cache;
 pub mod images;
 pub mod tags;
 pub mod tui;
@@ -18,6 +22,7 @@ pub static VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct State {
     pub picture_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub image_cache: ImageCache,
 
     pub db_pool: SqlitePool,
 }
@@ -43,9 +48,13 @@ impl State {
             .create_if_missing(true);
         let db = SqlitePool::connect_lazy_with(options);
 
+        let cache_dir = project_dirs.cache_dir().to_path_buf();
+        let image_cache = ImageCache::new(cache_dir)?;
+
         Ok(Self {
             picture_dir,
             data_dir,
+            image_cache,
             db_pool: db,
         })
     }

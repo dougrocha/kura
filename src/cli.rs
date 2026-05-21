@@ -5,6 +5,9 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
+    #[arg(long, global = true)]
+    pub clear_cache: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

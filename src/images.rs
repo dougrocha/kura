@@ -76,7 +76,7 @@ impl Image {
 
         let mapped = rows
             .into_iter()
-            .map(|row| -> Result<(Image, Option<Tag>)> {
+            .map(|row| -> Result<(Self, Option<Tag>)> {
                 let tag = row
                     .tag_id
                     .map(|id| -> Result<Tag> {
@@ -89,7 +89,7 @@ impl Image {
                     })
                     .transpose()?;
                 Ok((
-                    Image {
+                    Self {
                         id: row.id.unwrap(),
                         hash: ImageHash(row.hash),
                         name: row.name,
@@ -118,7 +118,7 @@ impl Image {
 
         let mapped = rows
             .into_iter()
-            .map(|row| -> Result<(Image, Option<Tag>)> {
+            .map(|row| -> Result<(Self, Option<Tag>)> {
                 let tag = row
                     .tag_id
                     .map(|id| -> Result<Tag> {
@@ -131,7 +131,7 @@ impl Image {
                     })
                     .transpose()?;
                 Ok((
-                    Image {
+                    Self {
                         id: row.id.unwrap(),
                         hash: ImageHash(row.hash),
                         name: row.name,
@@ -168,7 +168,7 @@ impl Image {
 
         let mapped = rows
             .into_iter()
-            .map(|row| -> Result<(Image, Option<Tag>)> {
+            .map(|row| -> Result<(Self, Option<Tag>)> {
                 let tag = row
                     .tag_id
                     .map(|id| -> Result<Tag> {
@@ -181,7 +181,7 @@ impl Image {
                     })
                     .transpose()?;
                 Ok((
-                    Image {
+                    Self {
                         id: row.id,
                         hash: ImageHash(row.hash),
                         name: row.name,
@@ -215,7 +215,7 @@ impl Image {
 
         let mapped = rows
             .into_iter()
-            .map(|row| -> Result<(Image, Option<Tag>)> {
+            .map(|row| -> Result<(Self, Option<Tag>)> {
                 let tag = row
                     .tag_id
                     .map(|id| -> Result<Tag> {
@@ -228,7 +228,7 @@ impl Image {
                     })
                     .transpose()?;
                 Ok((
-                    Image {
+                    Self {
                         id: row.id,
                         hash: ImageHash(row.hash),
                         name: row.name,
@@ -295,7 +295,7 @@ impl Image {
         Ok(())
     }
 
-    fn collect_images(rows: Vec<(Image, Option<Tag>)>) -> Vec<ImageWithTags> {
+    fn collect_images(rows: Vec<(Self, Option<Tag>)>) -> Vec<ImageWithTags> {
         let mut images: Vec<ImageWithTags> = Vec::new();
 
         for (img, tag) in rows {

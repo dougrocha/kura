@@ -18,7 +18,7 @@ use kura::{
 use miette::{IntoDiagnostic, Result, miette};
 use sha2::{Digest, Sha256};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let state = State::new()?;
 
@@ -27,9 +27,15 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.clear_cache {
+        state.image_cache.clear()?;
+    }
+
     match &cli.command {
         Some(Commands::Tui) => {
-            hako::run(KuraApp::new(state).await?).await.into_diagnostic()?;
+            hako::run(KuraApp::new(state).await?)
+                .await
+                .into_diagnostic()?;
         }
         Some(Commands::Nuke) => state.prune().await?,
         Some(Commands::Add {
@@ -99,7 +105,14 @@ async fn main() -> Result<()> {
                     let tags = if img.tags.is_empty() {
                         String::new()
                     } else {
-                        format!("  [{}]", img.tags.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>().join(", "))
+                        format!(
+                            "  [{}]",
+                            img.tags
+                                .iter()
+                                .map(|t| t.tag.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
                     };
                     println!("{}{}", img.image.name, tags);
                 }
