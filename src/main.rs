@@ -44,6 +44,15 @@ async fn main() -> Result<()> {
                 (Some(file_path), None) => get_local_image(file_path)?,
             };
 
+            let hash = ImageHash(hex::encode(Sha256::digest(&data)));
+
+            if let Some(existing) = Image::find_by_hash_or_name(&state, hash.as_str()).await? {
+                return Err(miette!(
+                    "Duplicate image: already stored as '{}'",
+                    existing.image.name
+                ));
+            }
+
             let mut dest = state
                 .picture_dir
                 .join(name.replace(' ', "-").to_lowercase());
@@ -53,8 +62,6 @@ async fn main() -> Result<()> {
             }
 
             fs::write(&dest, &data).into_diagnostic()?;
-
-            let hash = ImageHash(hex::encode(Sha256::digest(data)));
             let new_image = NewImage::new(hash.clone(), name, dest.to_str().unwrap());
             new_image.insert(&state).await?;
             println!("Added: {name} ({hash})");
@@ -81,9 +88,22 @@ async fn main() -> Result<()> {
             println!("Removed: {} ({})", image.image.name, image.image.hash);
         }
         Some(Commands::List { tag }) => {
-            let images = Image::all(&state).await?;
-            println!("Searching for {tag:#?}, result:");
-            println!("{images:#?}");
+            let images = match tag {
+                Some(t) => Image::all_with_tag(&state, t).await?,
+                None => Image::all(&state).await?,
+            };
+            if images.is_empty() {
+                println!("No images found.");
+            } else {
+                for img in &images {
+                    let tags = if img.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", img.tags.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>().join(", "))
+                    };
+                    println!("{}{}", img.image.name, tags);
+                }
+            }
         }
         Some(Commands::Tag { hash_or_name, tag }) => {
             let image = Image::find_by_hash_or_name(&state, hash_or_name)

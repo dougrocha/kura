@@ -60,6 +60,50 @@ impl Image {
         Ok(())
     }
 
+    pub async fn all_with_tag(state: &State, tag: &str) -> Result<Vec<ImageWithTags>> {
+        let rows = sqlx::query!(
+            "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,
+                t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
+             FROM images i
+             LEFT JOIN tags t ON t.image_hash = i.hash
+             WHERE i.hash IN (SELECT image_hash FROM tags WHERE tag = ?)
+             ORDER BY i.hash",
+            tag
+        )
+        .fetch_all(&state.db_pool)
+        .await
+        .into_diagnostic()?;
+
+        let mapped = rows
+            .into_iter()
+            .map(|row| -> Result<(Image, Option<Tag>)> {
+                let tag = row
+                    .tag_id
+                    .map(|id| -> Result<Tag> {
+                        Ok(Tag {
+                            id,
+                            image_hash: ImageHash(row.tag_image_hash.unwrap()),
+                            tag: row.tag.unwrap(),
+                            created_at: parse_created_at(row.tag_created_at.unwrap())?,
+                        })
+                    })
+                    .transpose()?;
+                Ok((
+                    Image {
+                        id: row.id.unwrap(),
+                        hash: ImageHash(row.hash),
+                        name: row.name,
+                        file_path: PathBuf::from(row.file_path),
+                        created_at: parse_created_at(row.created_at)?,
+                    },
+                    tag,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self::collect_images(mapped))
+    }
+
     pub async fn all(state: &State) -> Result<Vec<ImageWithTags>> {
         let rows = sqlx::query!(
             "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,
