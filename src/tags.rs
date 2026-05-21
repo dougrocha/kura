@@ -18,7 +18,7 @@ impl Tag {
         sqlx::query!(
             "CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                image_hash TEXT NOT NULL REFERENCES images(hash),
+                image_hash TEXT NOT NULL REFERENCES images(hash) ON DELETE CASCADE,
                 tag TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 UNIQUE(image_hash, tag)

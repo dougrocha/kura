@@ -159,7 +159,8 @@ impl Image {
                 t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
              FROM images i
              LEFT JOIN tags t ON t.image_hash = i.hash
-             WHERE i.file_path = ?",
+             WHERE i.file_path = ?
+             ORDER BY i.hash",
             path_str
         )
         .fetch_all(&state.db_pool)
@@ -182,7 +183,7 @@ impl Image {
                     .transpose()?;
                 Ok((
                     Self {
-                        id: row.id,
+                        id: row.id.unwrap(),
                         hash: ImageHash(row.hash),
                         name: row.name,
                         file_path: PathBuf::from(row.file_path),
@@ -205,7 +206,8 @@ impl Image {
                 t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at
              FROM images i
              LEFT JOIN tags t ON t.image_hash = i.hash
-             WHERE i.hash = ? OR i.name = ?",
+             WHERE i.hash = ? OR i.name = ?
+             ORDER BY i.hash",
             hash_or_name,
             hash_or_name
         )
@@ -229,7 +231,7 @@ impl Image {
                     .transpose()?;
                 Ok((
                     Self {
-                        id: row.id,
+                        id: row.id.unwrap(),
                         hash: ImageHash(row.hash),
                         name: row.name,
                         file_path: PathBuf::from(row.file_path),
