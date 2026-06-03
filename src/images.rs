@@ -5,12 +5,13 @@ use std::{
 
 use jiff::civil::DateTime;
 use miette::{IntoDiagnostic, Result, miette};
+use sha2::{Digest, Sha256};
 
 use hako::mime_type::MimeType;
 
 use crate::{
     State,
-    tags::Tag,
+    tags::{Tag, NewTag},
     types::{CreatedAt, ImageHash},
 };
 
@@ -347,4 +348,108 @@ impl<'a> NewImage<'a> {
 
         Ok(result.last_insert_rowid())
     }
+}
+
+/// Add a new image from a source (URL or file path) with optional tags
+pub async fn add_image(
+    state: &State,
+    source: &str,
+    name: &str,
+    tags: &[String],
+) -> Result<ImageHash> {
+    // Fetch image data from source
+    let (data, extension) = if hako::url::is_url(source) {
+        fetch_remote_image(source).await?
+    } else {
+        get_local_image(&PathBuf::from(source))?
+    };
+
+    // Calculate hash
+    let hash = ImageHash(hex::encode(Sha256::digest(&data)));
+
+    // Check for duplicates by hash or name
+    if let Some(existing) = Image::find_by_hash_or_name(&state, hash.as_str()).await? {
+        return Err(miette!(
+            "Duplicate image: already stored as '{}'",
+            existing.image.name
+        ));
+    }
+
+    // Prepare file path
+    let mut dest = state
+        .picture_dir
+        .join(name.replace(' ', "-").to_lowercase());
+    dest.set_extension(&extension);
+
+    if fs::exists(&dest).into_diagnostic()? {
+        return Err(miette!("An image with name {} already exists", name));
+    }
+
+    // Write file and insert into database
+    fs::write(&dest, &data).into_diagnostic()?;
+    let new_image = NewImage::new(hash.clone(), name, dest.to_str().unwrap());
+    new_image.insert(&state).await?;
+
+    // Add tags if provided
+    for tag in tags {
+        NewTag::new(&hash, tag).insert(&state).await?;
+    }
+
+    Ok(hash)
+}
+
+fn get_local_image(file_path: &Path) -> Result<(Vec<u8>, String)> {
+    let file_path = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        std::env::current_dir().into_diagnostic()?.join(file_path)
+    };
+
+    if !fs::exists(&file_path).into_diagnostic()? {
+        return Err(miette!("File does not exist"));
+    }
+
+    let extension = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| MimeType::from_extension(ext).is_ok())
+        .ok_or_else(|| miette!("File needs to be a valid image"))?
+        .to_string();
+    let data = fs::read(&file_path).into_diagnostic()?;
+    Ok((data, extension))
+}
+
+async fn fetch_remote_image(url: &str) -> Result<(Vec<u8>, String)> {
+    let resp = reqwest::get(url).await.into_diagnostic()?;
+    if !resp.status().is_success() {
+        return Err(miette!("Failed to fetch image: HTTP {}", resp.status()));
+    }
+    let data = resp.bytes().await.into_diagnostic()?.to_vec();
+
+    let extension = MimeType::from_bytes(&data)
+        .into_diagnostic()?
+        .extension()
+        .to_string();
+
+    Ok((data, extension))
+}
+
+/// Auto-generate a name from a source (URL or file path)
+pub fn auto_generate_name_from_source(source: &str) -> String {
+    let filename = if hako::url::is_url(source) {
+        source.rsplit('/').next().unwrap_or("image").to_string()
+    } else {
+        PathBuf::from(source)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "image".to_string())
+    };
+
+    filename
+        .split('.')
+        .next()
+        .unwrap_or("image")
+        .replace(|c: char| !c.is_alphanumeric() && c != '-', "-")
+        .to_lowercase()
 }

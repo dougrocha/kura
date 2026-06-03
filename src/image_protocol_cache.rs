@@ -5,7 +5,9 @@ use hako::image::StatefulProtocol;
 const MAX_SIZE: usize = 10;
 
 pub struct ImageProtocolCache {
-    map: HashMap<usize, StatefulProtocol>,
+    map: HashMap<String, StatefulProtocol>,
+    /// Insertion order for eviction
+    order: Vec<String>,
 }
 
 impl Default for ImageProtocolCache {
@@ -18,28 +20,32 @@ impl ImageProtocolCache {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
+            order: Vec::new(),
         }
     }
 
-    pub fn insert(&mut self, index: usize, protocol: StatefulProtocol) {
-        self.map.insert(index, protocol);
+    pub fn insert(&mut self, hash: String, protocol: StatefulProtocol) {
+        if !self.map.contains_key(&hash) {
+            self.order.push(hash.clone());
+        }
+        self.map.insert(hash, protocol);
 
-        if self.map.len() > MAX_SIZE {
-            let furthest = self
-                .map
-                .keys()
-                .copied()
-                .max_by_key(|&i| i.abs_diff(index))
-                .unwrap();
-            self.map.remove(&furthest);
+        while self.map.len() > MAX_SIZE {
+            let evict = self.order.remove(0);
+            self.map.remove(&evict);
         }
     }
 
-    pub fn take(&mut self, index: usize) -> Option<StatefulProtocol> {
-        self.map.remove(&index)
+    pub fn take(&mut self, hash: &str) -> Option<StatefulProtocol> {
+        if let Some(protocol) = self.map.remove(hash) {
+            self.order.retain(|h| h != hash);
+            Some(protocol)
+        } else {
+            None
+        }
     }
 
-    pub fn contains(&self, index: usize) -> bool {
-        self.map.contains_key(&index)
+    pub fn contains(&self, hash: &str) -> bool {
+        self.map.contains_key(hash)
     }
 }

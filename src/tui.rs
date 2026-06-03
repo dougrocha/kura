@@ -41,9 +41,9 @@ pub struct KuraApp {
     image_protocol: ThreadProtocol,
     picker: Picker,
     /// Sends new protocols to the image loader task
-    proto_tx: UnboundedSender<(usize, StatefulProtocol)>,
+    proto_tx: UnboundedSender<(String, StatefulProtocol)>,
     /// Receives fully loaded StatefulProtocols from the image loader task
-    proto_rx: UnboundedReceiver<(usize, StatefulProtocol)>,
+    proto_rx: UnboundedReceiver<(String, StatefulProtocol)>,
 
     /// Receives encoded ResizeResponses from the background worker
     resize_rx: UnboundedReceiver<ResizeRequest>,
@@ -63,7 +63,7 @@ impl KuraApp {
         let (resize_tx, resize_rx) = unbounded_channel::<ResizeRequest>();
 
         // Channel: image loader task sends StatefulProtocol → proto_rx
-        let (proto_tx, proto_rx) = unbounded_channel::<(usize, StatefulProtocol)>();
+        let (proto_tx, proto_rx) = unbounded_channel::<(String, StatefulProtocol)>();
 
         let image_protocol = ThreadProtocol::new(resize_tx, None);
 
@@ -100,7 +100,8 @@ impl KuraApp {
 
         self.image_protocol.empty_protocol();
 
-        if let Some(protocol) = self.protocol_cache.take(selected) {
+        let selected_hash = self.images[selected].image.hash.as_str().to_string();
+        if let Some(protocol) = self.protocol_cache.take(&selected_hash) {
             self.image_protocol.replace_protocol(protocol);
         } else {
             self.spawn_image_load(selected);
@@ -113,7 +114,13 @@ impl KuraApp {
             selected + 2,
         ]
         .into_iter()
-        .filter(|&i| i < self.images.len() && !self.protocol_cache.contains(i))
+        .filter(|&i| {
+            if let Some(img) = self.images.get(i) {
+                !self.protocol_cache.contains(img.image.hash.as_str())
+            } else {
+                false
+            }
+        })
         .collect();
 
         for index in neighbors {
@@ -134,6 +141,7 @@ impl KuraApp {
         let token = self.image_cancellation_token.clone();
 
         tokio::spawn(async move {
+            let hash_for_send = hash.clone();
             let result = tokio::task::spawn_blocking(move || {
                 if token.is_cancelled() {
                     return None;
@@ -151,7 +159,7 @@ impl KuraApp {
             .await;
 
             if let Ok(Some(protocol)) = result {
-                let _ = tx.send((index, protocol));
+                let _ = tx.send((hash_for_send, protocol));
             }
         });
     }
@@ -202,6 +210,7 @@ impl KuraApp {
             .arg(&img.image.file_path)
             .spawn();
     }
+
 }
 
 impl App for KuraApp {
@@ -214,6 +223,7 @@ impl App for KuraApp {
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
         match event {
             Event::Key(key) => {
+                // Handle existing text inputs
                 if let Some(input) = &mut self.rename_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) => {
@@ -280,12 +290,14 @@ impl App for KuraApp {
             }
             Event::Tick => {
                 self.rename_error = None;
-                let selected = self.scroll_list.selected().unwrap_or(0);
-                while let Ok((index, protocol)) = self.proto_rx.try_recv() {
-                    if index == selected {
+                let selected_hash = self.scroll_list.selected()
+                    .and_then(|i| self.images.get(i))
+                    .map(|img| img.image.hash.as_str().to_string());
+                while let Ok((hash, protocol)) = self.proto_rx.try_recv() {
+                    if selected_hash.as_deref() == Some(hash.as_str()) {
                         self.image_protocol.replace_protocol(protocol);
                     } else {
-                        self.protocol_cache.insert(index, protocol);
+                        self.protocol_cache.insert(hash, protocol);
                     }
                 }
                 while let Ok(request) = self.resize_rx.try_recv() {
@@ -366,7 +378,7 @@ impl App for KuraApp {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Images"))
+            .block(Block::default().borders(Borders::ALL).title("Images  [r] rename"))
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
@@ -461,9 +473,10 @@ impl App for KuraApp {
 
         let tags_block = Block::default()
             .borders(Borders::ALL)
-            .title("Tags  [t] add  [u] remove");
+            .title("Tags  [Enter] copy  [o] open  [t] add  [u] remove");
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);
+
     }
 }

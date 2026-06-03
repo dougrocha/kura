@@ -1,0 +1,13 @@
+[package]
+name = "hako"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossterm = { workspace = true }
+futures = { workspace = true }
+ratatui = { workspace = true }
+ratatui-image = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
