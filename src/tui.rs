@@ -25,9 +25,16 @@ pub enum Action {
     Untag { index: usize, tag: String },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Browse,
+    Pick,
+}
+
 pub struct KuraApp {
     #[allow(dead_code)]
     state: State,
+    mode: Mode,
     images: Vec<ImageWithTags>,
     /// Indices into `images` that match the search, in display order.
     visible: Vec<usize>,
@@ -61,7 +68,7 @@ pub struct KuraApp {
 }
 
 impl KuraApp {
-    pub async fn new(state: State) -> Result<Self> {
+    pub async fn new(state: State, mode: Mode) -> Result<Self> {
         let images = Image::all(&state).await?;
         let visible = (0..images.len()).collect();
 
@@ -76,12 +83,18 @@ impl KuraApp {
 
         let image_protocol = ThreadProtocol::new(resize_tx, None);
 
+        let search_input = match mode {
+            Mode::Browse => None,
+            Mode::Pick => Some(TextInput::new(String::new())),
+        };
+
         let mut app = Self {
             state,
+            mode,
             images,
             visible,
             scroll_list,
-            search_input: None,
+            search_input,
             search_query: String::new(),
             matcher: Matcher::new(Config::DEFAULT),
             image_protocol,
@@ -129,11 +142,7 @@ impl KuraApp {
         ]
         .into_iter()
         .filter_map(|p| self.visible.get(p).copied())
-        .filter(|&i| {
-            !self
-                .protocol_cache
-                .contains(self.images[i].image.hash.as_str())
-        })
+        .filter(|&i| !self.protocol_cache.contains(self.images[i].image.hash.as_str()))
         .collect();
 
         for index in neighbors {
@@ -266,11 +275,20 @@ impl App for KuraApp {
                 // Handle existing text inputs
                 if let Some(input) = &mut self.search_input {
                     match input.handle_key(key) {
-                        TextInputEvent::Submitted(_) => self.search_input = None,
-                        TextInputEvent::Cancelled => {
-                            self.search_input = None;
-                            self.clear_search();
-                        }
+                        TextInputEvent::Submitted(_) => match self.mode {
+                            Mode::Browse => self.search_input = None,
+                            Mode::Pick => {
+                                self.copy_selected_to_clipboard();
+                                self.should_quit = true;
+                            }
+                        },
+                        TextInputEvent::Cancelled => match self.mode {
+                            Mode::Browse => {
+                                self.search_input = None;
+                                self.clear_search();
+                            }
+                            Mode::Pick => self.should_quit = true,
+                        },
                         TextInputEvent::Changed => {
                             self.search_query = input.value().to_string();
                             self.apply_search();
@@ -456,7 +474,11 @@ impl App for KuraApp {
 
         let active_input: Option<(&TextInput, Option<&str>, &str)> =
             if let Some(input) = &self.search_input {
-                Some((input, None, "Search  name, tags, #tag"))
+                let title = match self.mode {
+                    Mode::Browse => "Search  name, tags, #tag",
+                    Mode::Pick => "Pick  [Enter] copy  [Esc] close",
+                };
+                Some((input, None, title))
             } else if let Some(input) = &self.rename_input {
                 Some((input, self.rename_error.as_deref(), "Rename"))
             } else if let Some(input) = &self.tag_input {
@@ -553,5 +575,6 @@ impl App for KuraApp {
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);
+
     }
 }

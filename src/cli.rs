@@ -42,6 +42,8 @@ pub enum Commands {
         new_name: String,
     },
     Tui,
+    /// Fuzzy pick an image, copy it, and exit
+    Pick,
     Nuke,
     Serve {
         #[arg(short, long, default_value_t = 7878)]

@@ -12,7 +12,7 @@ use kura::{
     cli::{Cli, Commands},
     images::{Image, NewImage},
     tags::{NewTag, Tag},
-    tui::KuraApp,
+    tui::{KuraApp, Mode},
     types::ImageHash,
 };
 use miette::{IntoDiagnostic, Result, miette};
@@ -33,7 +33,12 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Tui) => {
-            hako::run(KuraApp::new(state).await?)
+            hako::run(KuraApp::new(state, Mode::Browse).await?)
+                .await
+                .into_diagnostic()?;
+        }
+        Some(Commands::Pick) => {
+            hako::run(KuraApp::new(state, Mode::Pick).await?)
                 .await
                 .into_diagnostic()?;
         }
