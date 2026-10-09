@@ -13,7 +13,7 @@ futures = "0.3.32"
 hex = "0.4.3"
 image = "0.25.10"
 jiff = { version = "0.2.24", features = ["serde"] }
-miette = "7.6.0"
+miette = { version = "7.6.0", features = ["fancy"] }
 nucleo-matcher = "0.3.1"
 ratatui = "0.30.0"
 ratatui-image = { version = "11.0.2", features = ["tokio"] }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM tags WHERE image_hash = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ddf5096c96999fc1ed7ade11a06a9b6a9b0a25ef5dd482c2ebc5e4891ef3a4d4"
+}

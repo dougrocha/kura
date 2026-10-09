@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO tags (image_hash, tag, created_at) VALUES (?, ?, datetime('now'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "bf9e4ed5a265e141d9d1c039a6e4c24825ce08c19ba6fbb7057514e614fb85ba"
+}

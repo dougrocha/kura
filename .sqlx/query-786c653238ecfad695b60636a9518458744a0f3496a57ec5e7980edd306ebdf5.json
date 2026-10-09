@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TABLE IF NOT EXISTS tags (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                image_hash TEXT NOT NULL REFERENCES images(hash) ON DELETE CASCADE,\n                tag TEXT NOT NULL,\n                created_at TEXT NOT NULL,\n                UNIQUE(image_hash, tag)\n            )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "786c653238ecfad695b60636a9518458744a0f3496a57ec5e7980edd306ebdf5"
+}

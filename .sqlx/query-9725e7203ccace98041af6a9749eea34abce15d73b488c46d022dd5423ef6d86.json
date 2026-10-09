@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT i.id, i.hash, i.name, i.file_path, i.created_at,\n                t.id AS tag_id, t.image_hash AS tag_image_hash, t.tag, t.created_at AS tag_created_at\n             FROM images i\n             LEFT JOIN tags t ON t.image_hash = i.hash\n             WHERE i.hash IN (SELECT image_hash FROM tags WHERE tag = ?)\n             ORDER BY i.hash",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "hash",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "tag_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_image_hash",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "tag",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "tag_created_at",
+        "ordinal": 8,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "9725e7203ccace98041af6a9749eea34abce15d73b488c46d022dd5423ef6d86"
+}

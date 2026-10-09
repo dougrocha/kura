@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TABLE IF NOT EXISTS images (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                hash TEXT NOT NULL UNIQUE,\n                name TEXT NOT NULL,\n                file_path TEXT NOT NULL,\n                created_at TEXT NOT NULL\n            )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "1d48de9db5b81386487979d105a56cf742e09befbe173b289276c87226b83e1c"
+}
