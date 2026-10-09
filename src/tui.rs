@@ -83,18 +83,13 @@ impl KuraApp {
 
         let image_protocol = ThreadProtocol::new(resize_tx, None);
 
-        let search_input = match mode {
-            Mode::Browse => None,
-            Mode::Pick => Some(TextInput::new(String::new())),
-        };
-
         let mut app = Self {
             state,
             mode,
             images,
             visible,
             scroll_list,
-            search_input,
+            search_input: None,
             search_query: String::new(),
             matcher: Matcher::new(Config::DEFAULT),
             image_protocol,
@@ -275,20 +270,11 @@ impl App for KuraApp {
                 // Handle existing text inputs
                 if let Some(input) = &mut self.search_input {
                     match input.handle_key(key) {
-                        TextInputEvent::Submitted(_) => match self.mode {
-                            Mode::Browse => self.search_input = None,
-                            Mode::Pick => {
-                                self.copy_selected_to_clipboard();
-                                self.should_quit = true;
-                            }
-                        },
-                        TextInputEvent::Cancelled => match self.mode {
-                            Mode::Browse => {
-                                self.search_input = None;
-                                self.clear_search();
-                            }
-                            Mode::Pick => self.should_quit = true,
-                        },
+                        TextInputEvent::Submitted(_) => self.search_input = None,
+                        TextInputEvent::Cancelled => {
+                            self.search_input = None;
+                            self.clear_search();
+                        }
                         TextInputEvent::Changed => {
                             self.search_query = input.value().to_string();
                             self.apply_search();
@@ -350,7 +336,12 @@ impl App for KuraApp {
                         }
                         KeyCode::Char('j') | KeyCode::Down => self.select_next(),
                         KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
-                        KeyCode::Enter => self.copy_selected_to_clipboard(),
+                        KeyCode::Enter => {
+                            self.copy_selected_to_clipboard();
+                            if self.mode == Mode::Pick {
+                                self.should_quit = true;
+                            }
+                        }
                         KeyCode::Char('o') => self.open_selected(),
                         KeyCode::Char('r') => {
                             if let Some(img) = self.selected() {
@@ -474,11 +465,7 @@ impl App for KuraApp {
 
         let active_input: Option<(&TextInput, Option<&str>, &str)> =
             if let Some(input) = &self.search_input {
-                let title = match self.mode {
-                    Mode::Browse => "Search  name, tags, #tag",
-                    Mode::Pick => "Pick  [Enter] copy  [Esc] close",
-                };
-                Some((input, None, title))
+                Some((input, None, "Search  name, tags, #tag"))
             } else if let Some(input) = &self.rename_input {
                 Some((input, self.rename_error.as_deref(), "Rename"))
             } else if let Some(input) = &self.tag_input {

@@ -102,10 +102,13 @@ clears the preview cache.
 
 ### Picker
 
-`kura pick` opens the same browser with the search box focused. Type to filter.
-Up and Down move the selection. Enter copies the selected image to the
-clipboard and exits. Esc exits without copying. In the picker, `q` types a
-letter instead of quitting.
+`kura pick` opens the same browser as `kura tui`, with the search box closed.
+Use `j` and `k`, or Down and Up, to move the selection. Press `/` to open the
+search box and type to filter. Enter closes the search box and keeps the
+filter. Esc closes the search box and clears the filter.
+
+In the list, Enter copies the selected image to the clipboard and exits. Esc
+clears an active filter first, and otherwise exits. `q` exits without copying.
 
 To open the picker from a hotkey, float it with a window rule. Ghostty's
 `--class` sets the window class that the rule matches. This example uses
