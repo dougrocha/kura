@@ -14,6 +14,7 @@ hex = "0.4.3"
 image = "0.25.10"
 jiff = { version = "0.2.24", features = ["serde"] }
 miette = "7.6.0"
+nucleo-matcher = "0.3.1"
 ratatui = "0.30.0"
 ratatui-image = { version = "11.0.2", features = ["tokio"] }
 reqwest = "0.13.3"
@@ -48,6 +49,7 @@ hex = { workspace = true }
 image = { workspace = true }
 jiff = { workspace = true }
 miette = { workspace = true }
+nucleo-matcher = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }

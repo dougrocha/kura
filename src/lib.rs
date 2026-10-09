@@ -12,6 +12,7 @@ pub mod cli;
 pub mod image_cache;
 pub mod image_protocol_cache;
 pub mod images;
+pub mod search;
 pub mod tags;
 pub mod tui;
 pub mod types;

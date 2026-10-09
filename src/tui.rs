@@ -7,6 +7,7 @@ use hako::{
     widgets::{Block, Borders, Line, List, ListItem, Paragraph, Span},
 };
 use miette::Result;
+use nucleo_matcher::{Config, Matcher};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,7 @@ use crate::{
     State,
     image_protocol_cache::ImageProtocolCache,
     images::{Image, ImageWithTags},
+    search,
     tags::NewTag,
 };
 
@@ -27,7 +29,13 @@ pub struct KuraApp {
     #[allow(dead_code)]
     state: State,
     images: Vec<ImageWithTags>,
+    /// Indices into `images` that match the search, in display order.
+    visible: Vec<usize>,
     scroll_list: ScrollList,
+
+    search_input: Option<TextInput>,
+    search_query: String,
+    matcher: Matcher,
 
     should_quit: bool,
 
@@ -55,6 +63,7 @@ pub struct KuraApp {
 impl KuraApp {
     pub async fn new(state: State) -> Result<Self> {
         let images = Image::all(&state).await?;
+        let visible = (0..images.len()).collect();
 
         let scroll_list = ScrollList::new(images.len());
 
@@ -70,7 +79,11 @@ impl KuraApp {
         let mut app = Self {
             state,
             images,
+            visible,
             scroll_list,
+            search_input: None,
+            search_query: String::new(),
+            matcher: Matcher::new(Config::DEFAULT),
             image_protocol,
             proto_rx,
             proto_tx,
@@ -91,14 +104,15 @@ impl KuraApp {
     }
 
     fn load_selected_image(&mut self) {
-        let Some(selected) = self.scroll_list.selected() else {
-            return;
-        };
-
         self.image_cancellation_token.cancel();
         self.image_cancellation_token = CancellationToken::new();
 
         self.image_protocol.empty_protocol();
+
+        let Some(position) = self.scroll_list.selected() else {
+            return;
+        };
+        let selected = self.visible[position];
 
         let selected_hash = self.images[selected].image.hash.as_str().to_string();
         if let Some(protocol) = self.protocol_cache.take(&selected_hash) {
@@ -108,18 +122,17 @@ impl KuraApp {
         }
 
         let neighbors: Vec<usize> = [
-            selected.wrapping_sub(2),
-            selected.wrapping_sub(1),
-            selected + 1,
-            selected + 2,
+            position.wrapping_sub(2),
+            position.wrapping_sub(1),
+            position + 1,
+            position + 2,
         ]
         .into_iter()
+        .filter_map(|p| self.visible.get(p).copied())
         .filter(|&i| {
-            if let Some(img) = self.images.get(i) {
-                !self.protocol_cache.contains(img.image.hash.as_str())
-            } else {
-                false
-            }
+            !self
+                .protocol_cache
+                .contains(self.images[i].image.hash.as_str())
         })
         .collect();
 
@@ -164,8 +177,36 @@ impl KuraApp {
         });
     }
 
+    /// Index into `images` of the selected row.
+    fn selected_index(&self) -> Option<usize> {
+        self.scroll_list
+            .selected()
+            .and_then(|position| self.visible.get(position).copied())
+    }
+
     fn selected(&self) -> Option<&ImageWithTags> {
-        self.scroll_list.selected().and_then(|i| self.images.get(i))
+        self.selected_index().map(|i| &self.images[i])
+    }
+
+    /// Re-runs the search and selects the best match.
+    fn apply_search(&mut self) {
+        let before = self.selected_index();
+        self.visible = search::filter(&self.images, &self.search_query, &mut self.matcher);
+        self.scroll_list = ScrollList::new(self.visible.len());
+        if self.selected_index() != before {
+            self.load_selected_image();
+        }
+    }
+
+    /// Drops the filter but stays on the image that was selected.
+    fn clear_search(&mut self) {
+        let selected = self.selected_index();
+        self.search_query.clear();
+        self.apply_search();
+        if let Some(position) = self.visible.iter().position(|&i| Some(i) == selected) {
+            self.scroll_list.select(position);
+            self.load_selected_image();
+        }
     }
 
     fn select_next(&mut self) {
@@ -196,10 +237,10 @@ impl KuraApp {
         if let Ok(images) = Image::all(&self.state).await {
             let selected = self.scroll_list.selected();
             self.images = images;
-            self.scroll_list = ScrollList::new(self.images.len());
+            self.visible = search::filter(&self.images, &self.search_query, &mut self.matcher);
+            self.scroll_list = ScrollList::new(self.visible.len());
             if let Some(i) = selected {
-                let clamped = i.min(self.images.len().saturating_sub(1));
-                self.scroll_list.select(clamped);
+                self.scroll_list.select(i);
             }
         }
     }
@@ -210,7 +251,6 @@ impl KuraApp {
             .arg(&img.image.file_path)
             .spawn();
     }
-
 }
 
 impl App for KuraApp {
@@ -224,10 +264,27 @@ impl App for KuraApp {
         match event {
             Event::Key(key) => {
                 // Handle existing text inputs
-                if let Some(input) = &mut self.rename_input {
+                if let Some(input) = &mut self.search_input {
+                    match input.handle_key(key) {
+                        TextInputEvent::Submitted(_) => self.search_input = None,
+                        TextInputEvent::Cancelled => {
+                            self.search_input = None;
+                            self.clear_search();
+                        }
+                        TextInputEvent::Changed => {
+                            self.search_query = input.value().to_string();
+                            self.apply_search();
+                        }
+                        TextInputEvent::Ignored => match key.code {
+                            KeyCode::Down => self.select_next(),
+                            KeyCode::Up => self.select_prev(),
+                            _ => {}
+                        },
+                    }
+                } else if let Some(input) = &mut self.rename_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) => {
-                            if let Some(index) = self.scroll_list.selected() {
+                            if let Some(index) = self.selected_index() {
                                 return Some(Action::Rename {
                                     index,
                                     new_name: val,
@@ -243,7 +300,7 @@ impl App for KuraApp {
                 } else if let Some(input) = &mut self.tag_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) if !val.is_empty() => {
-                            if let Some(index) = self.scroll_list.selected() {
+                            if let Some(index) = self.selected_index() {
                                 return Some(Action::Tag { index, tag: val });
                             }
                         }
@@ -256,7 +313,7 @@ impl App for KuraApp {
                 } else if let Some(input) = &mut self.untag_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) if !val.is_empty() => {
-                            if let Some(index) = self.scroll_list.selected() {
+                            if let Some(index) = self.selected_index() {
                                 return Some(Action::Untag { index, tag: val });
                             }
                         }
@@ -268,7 +325,11 @@ impl App for KuraApp {
                     }
                 } else {
                     match key.code {
+                        KeyCode::Esc if !self.search_query.is_empty() => self.clear_search(),
                         KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                        KeyCode::Char('/') => {
+                            self.search_input = Some(TextInput::new(self.search_query.clone()));
+                        }
                         KeyCode::Char('j') | KeyCode::Down => self.select_next(),
                         KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
                         KeyCode::Enter => self.copy_selected_to_clipboard(),
@@ -290,8 +351,8 @@ impl App for KuraApp {
             }
             Event::Tick => {
                 self.rename_error = None;
-                let selected_hash = self.scroll_list.selected()
-                    .and_then(|i| self.images.get(i))
+                let selected_hash = self
+                    .selected()
                     .map(|img| img.image.hash.as_str().to_string());
                 while let Ok((hash, protocol)) = self.proto_rx.try_recv() {
                     if selected_hash.as_deref() == Some(hash.as_str()) {
@@ -372,23 +433,36 @@ impl App for KuraApp {
             .split(frame.area());
 
         let items: Vec<ListItem> = self
-            .images
+            .visible
             .iter()
-            .map(|img| ListItem::new(img.image.name.clone()))
+            .map(|&i| ListItem::new(self.images[i].image.name.clone()))
             .collect();
 
+        let list_title = if self.search_query.is_empty() {
+            "Images  [/] search  [r] rename".to_string()
+        } else {
+            format!(
+                "Images {}/{}  /{}  [Esc] clear",
+                self.visible.len(),
+                self.images.len(),
+                self.search_query
+            )
+        };
+
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Images  [r] rename"))
+            .block(Block::default().borders(Borders::ALL).title(list_title))
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
-        let active_input: Option<(&TextInput, &Option<String>, &str)> =
-            if let Some(input) = &self.rename_input {
-                Some((input, &self.rename_error, "Rename"))
+        let active_input: Option<(&TextInput, Option<&str>, &str)> =
+            if let Some(input) = &self.search_input {
+                Some((input, None, "Search  name, tags, #tag"))
+            } else if let Some(input) = &self.rename_input {
+                Some((input, self.rename_error.as_deref(), "Rename"))
             } else if let Some(input) = &self.tag_input {
-                Some((input, &self.tag_error, "Add tag"))
+                Some((input, self.tag_error.as_deref(), "Add tag"))
             } else if let Some(input) = &self.untag_input {
-                Some((input, &self.tag_error, "Remove tag"))
+                Some((input, self.tag_error.as_deref(), "Remove tag"))
             } else {
                 None
             };
@@ -403,7 +477,7 @@ impl App for KuraApp {
 
             let cursor_line = Line::from(input.display());
             let error_line = if let Some(err) = error {
-                Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+                Line::from(Span::styled(err, Style::default().fg(Color::Red)))
             } else {
                 Line::from("")
             };
@@ -441,6 +515,8 @@ impl App for KuraApp {
         } else {
             let msg = if self.images.is_empty() {
                 "No images found.".to_string()
+            } else if self.visible.is_empty() {
+                "No matches.".to_string()
             } else {
                 "Loading...".to_string()
             };
@@ -477,6 +553,5 @@ impl App for KuraApp {
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);
-
     }
 }
