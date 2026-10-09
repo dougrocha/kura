@@ -1,5 +1,5 @@
-use hako::clipboard::clipboard;
-use hako::{
+use hako_tui::clipboard::clipboard;
+use hako_tui::{
     App, Event, Frame, KeyCode, ScrollList, TextInput, TextInputEvent,
     image::{Picker, ResizeRequest, StatefulImage, StatefulProtocol, ThreadProtocol},
     layout::{Constraint, Direction, Layout},

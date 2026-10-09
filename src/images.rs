@@ -7,7 +7,7 @@ use jiff::civil::DateTime;
 use miette::{IntoDiagnostic, Result, miette};
 use sha2::{Digest, Sha256};
 
-use hako::mime_type::MimeType;
+use hako_tui::mime_type::MimeType;
 
 use crate::{
     State,
@@ -358,7 +358,7 @@ pub async fn add_image(
     tags: &[String],
 ) -> Result<ImageHash> {
     // Fetch image data from source
-    let (data, extension) = if hako::url::is_url(source) {
+    let (data, extension) = if hako_tui::url::is_url(source) {
         fetch_remote_image(source).await?
     } else {
         get_local_image(&PathBuf::from(source))?
@@ -436,7 +436,7 @@ async fn fetch_remote_image(url: &str) -> Result<(Vec<u8>, String)> {
 
 /// Auto-generate a name from a source (URL or file path)
 pub fn auto_generate_name_from_source(source: &str) -> String {
-    let filename = if hako::url::is_url(source) {
+    let filename = if hako_tui::url::is_url(source) {
         source.rsplit('/').next().unwrap_or("image").to_string()
     } else {
         PathBuf::from(source)

@@ -17,7 +17,8 @@ previews. One key press copies the selected meme to the clipboard.
   in the background and the most recent previews are cached.
 - **Search.** Press `/` to fuzzy search names and tags. `#reaction` filters by tag.
 - **Hako.** The TUI is built on Hako (箱, "box"), my own small async TUI
-  framework on top of ratatui. It lives in this repo under `hako/`.
+  framework on top of ratatui. It lives in this repo under `hako/tui/`, next to
+  `hako-http` in `hako/http/`.
 
 ## Running it
 
@@ -130,8 +131,8 @@ hl.bind("SUPER + I", hl.dsp.exec_cmd("ghostty --class=org.arsene.kura-pick -e ku
 
 Hako is the reusable part. Kura is its first user.
 
-- **App loop.** Implement `hako::App` (`handle_event`, `on_action`, `render`)
-  and call `hako::run(app)`. Input events become actions, and actions are
+- **App loop.** Implement `hako_tui::App` (`handle_event`, `on_action`, `render`)
+  and call `hako_tui::run(app)`. Input events become actions, and actions are
   handled asynchronously.
 - **Component stack.** Components get each event from the top of the stack
   down. A component either lets the event pass on or stops it there, and it can

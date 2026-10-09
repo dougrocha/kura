@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{CommandFactory, Parser};
-use hako::mime_type::MimeType;
+use hako_tui::mime_type::MimeType;
 use kura::{
     State,
     cli::{Cli, Commands},
@@ -33,12 +33,12 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Tui) => {
-            hako::run(KuraApp::new(state, Mode::Browse).await?)
+            hako_tui::run(KuraApp::new(state, Mode::Browse).await?)
                 .await
                 .into_diagnostic()?;
         }
         Some(Commands::Pick) => {
-            hako::run(KuraApp::new(state, Mode::Pick).await?)
+            hako_tui::run(KuraApp::new(state, Mode::Pick).await?)
                 .await
                 .into_diagnostic()?;
         }

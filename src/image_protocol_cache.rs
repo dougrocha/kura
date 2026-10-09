@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hako::image::StatefulProtocol;
+use hako_tui::image::StatefulProtocol;
 
 const MAX_SIZE: usize = 10;
 

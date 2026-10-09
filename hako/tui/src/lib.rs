@@ -45,7 +45,7 @@ pub mod image {
 }
 
 /// A ready-made event loop. Implement this trait on your app state, then call
-/// `hako::run(state)` to start the TUI.
+/// `hako_tui::run(state)` to start the TUI.
 pub trait App: Sized {
     type Action;
 

@@ -1,5 +1,5 @@
 [package]
-name = "hako"
+name = "hako-tui"
 version.workspace = true
 edition.workspace = true
 
