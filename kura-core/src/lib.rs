@@ -28,7 +28,10 @@ pub use changes::{Change, ChangeKind, ChangeSeq, WatchEvent};
 pub use error::{Error, ErrorKind, FetchFailure, InvalidInput, Result};
 pub use health::Health;
 pub use library::{ImageFile, Library, LibraryPaths, Limits};
-pub use model::{Added, Edited, Image, ImageFilter, ImageHash, ImageName, ImageRef, MediaType, NewName, Tag, TagCount};
+pub use model::{
+    Added, Edited, Image, ImageFilter, ImageHash, ImageName, ImageRef, MediaType, NewName, Tag, TagCount,
+    parse_created_at,
+};
 pub use source::{FetchPolicy, HttpUrl, Source};
 pub use thumbs::{ThumbSize, Thumbnail};
 

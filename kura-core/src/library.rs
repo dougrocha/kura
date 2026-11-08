@@ -21,6 +21,7 @@ use std::{
 use directories::{ProjectDirs, UserDirs};
 
 use futures::Stream;
+use jiff::Timestamp;
 
 use crate::{
     changes::{self, ChangeKind, ChangeSeq, WatchEvent},
@@ -224,7 +225,14 @@ impl Library {
     ///
     /// Adding bytes that are already stored returns `Added::Existing` with the
     /// stored image untouched, also when two adds of the same bytes race.
-    pub async fn add(&self, source: Source, name: impl Into<NewName>, tags: &[Tag]) -> Result<Added> {
+    /// `created_at` defaults to now; imports pass the original date.
+    pub async fn add(
+        &self,
+        source: Source,
+        name: impl Into<NewName>,
+        tags: &[Tag],
+        created_at: Option<Timestamp>,
+    ) -> Result<Added> {
         let name = name.into();
         let hint = source.hint.clone();
         let staged = self.inner.layout.stage(source, self.inner.limits.max_image_bytes).await?;
@@ -252,7 +260,7 @@ impl Library {
             }
         };
 
-        if !tx.insert_image(&hash, &name, extension).await? {
+        if !tx.insert_image(&hash, &name, extension, created_at).await? {
             // Another add stored the same bytes after our fast-path check.
             let existing = tx.resolve(&ImageRef::Hash(hash)).await?;
             return Ok(Added::Existing(existing));

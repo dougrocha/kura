@@ -214,6 +214,28 @@ fn clean_text(s: &str, field: &'static str, max_chars: usize) -> Result<String, 
     Ok(s.to_owned())
 }
 
+/// A caller-chosen `created_at`, for imports that keep their original dates:
+/// RFC 3339 (`2026-05-14T00:29:43Z`), or `2026-05-14 00:29:43` read as UTC, the
+/// form Kura stores. Can't be in the future.
+pub fn parse_created_at(s: &str) -> Result<Timestamp, InvalidInput> {
+    const FIELD: &str = "created_at";
+    let s = s.trim();
+    let at = s
+        .parse::<Timestamp>()
+        .or_else(|_| {
+            jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", s)
+                .and_then(|civil| civil.to_zoned(jiff::tz::TimeZone::UTC))
+                .map(|zoned| zoned.timestamp())
+        })
+        .map_err(|_| {
+            InvalidInput::new(FIELD, "must be RFC 3339 (2026-05-14T00:29:43Z) or 'YYYY-MM-DD HH:MM:SS' in UTC")
+        })?;
+    if at > Timestamp::now() {
+        return Err(InvalidInput::new(FIELD, "can't be in the future"));
+    }
+    Ok(at)
+}
+
 /// How a caller points at an image: 64 hex characters are a hash, anything else
 /// that is a valid name is a name. Never ambiguous, because names can't be hash-shaped.
 #[derive(Debug, Clone, PartialEq, Eq)]

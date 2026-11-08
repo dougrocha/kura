@@ -46,14 +46,14 @@ async fn main() -> Result<()> {
 
 async fn run(lib: &Library, command: Commands) -> kura_core::Result<()> {
     match command {
-        Commands::Add { source, name, tags } => {
+        Commands::Add { source, name, tags, created_at } => {
             // The CLI acts as the local user, so it may read local files and
             // fetch from the local network.
             let source = match HttpUrl::parse(&source) {
                 Ok(url) => Source::fetch(&url, &FetchPolicy::trusted_local_user()).await?,
                 Err(_) => Source::path(&source).await?,
             };
-            match lib.add(source, name, &tags).await? {
+            match lib.add(source, name, &tags, created_at).await? {
                 Added::Created(image) => println!("Added: {} ({})", image.name(), image.hash()),
                 Added::Existing(image) => {
                     println!("Already stored as '{}' ({})", image.name(), image.hash());

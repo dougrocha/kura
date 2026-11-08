@@ -234,16 +234,24 @@ impl WriteTx {
     }
 
     /// Insert an image row. Returns `false` if the hash is already stored (another
-    /// add got there first); a taken name is `NameTaken`.
-    pub(crate) async fn insert_image(&mut self, hash: &ImageHash, name: &ImageName, extension: &str) -> Result<bool> {
+    /// add got there first); a taken name is `NameTaken`. `created_at` defaults to now.
+    pub(crate) async fn insert_image(
+        &mut self,
+        hash: &ImageHash,
+        name: &ImageName,
+        extension: &str,
+        created_at: Option<Timestamp>,
+    ) -> Result<bool> {
         let (hash_str, name_str) = (hash.as_str(), name.as_str());
+        let created_at = created_at.map(|at| at.strftime("%Y-%m-%d %H:%M:%S").to_string());
         let result = sqlx::query!(
             "INSERT INTO images (hash, name, extension, created_at)
-             VALUES (?, ?, ?, datetime('now'))
+             VALUES (?, ?, ?, COALESCE(?, datetime('now')))
              ON CONFLICT(hash) DO NOTHING",
             hash_str,
             name_str,
-            extension
+            extension,
+            created_at
         )
         .execute(&mut *self.tx)
         .await

@@ -63,6 +63,8 @@ pub struct UploadQuery {
     #[serde(default)]
     pub tags: String,
     pub file_name: Option<String>,
+    /// RFC 3339 or "YYYY-MM-DD HH:MM:SS" (UTC); defaults to now.
+    pub created_at: Option<String>,
 }
 
 /// `POST /imports`: add an image from a public URL.
@@ -72,6 +74,8 @@ pub struct Import {
     pub name: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// RFC 3339 or "YYYY-MM-DD HH:MM:SS" (UTC); defaults to now.
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use kura_core::{ImageName, ImageRef, Tag};
+use kura_core::{ImageName, ImageRef, Tag, Timestamp, parse_created_at};
 use kura_server::ServeArgs;
 
 #[derive(Parser, Debug)]
@@ -31,6 +31,10 @@ pub enum Commands {
         /// Tag to add; repeat for several tags
         #[arg(short, long = "tag")]
         tags: Vec<Tag>,
+        /// When the image was added, to keep an import's original date:
+        /// RFC 3339 (2026-05-14T00:29:43Z) or "2026-05-14 00:29:43" in UTC
+        #[arg(long, value_parser = parse_created_at)]
+        created_at: Option<Timestamp>,
     },
     /// Remove an image by hash or name, or by a copy of its file
     Remove {

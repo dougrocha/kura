@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO images (hash, name, extension, created_at)\n             VALUES (?, ?, ?, COALESCE(?, datetime('now')))\n             ON CONFLICT(hash) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "c86b5b7af0ecf8f6675c3ed47923d3bbbf9e695d4ea8d866a1e19a8d0e8856cc"
+}

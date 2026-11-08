@@ -45,7 +45,7 @@ async fn add_tag_rename_delete_round_trip() {
     let src = write_png(tmp.path(), "Grumpy Cat.png", 1);
 
     // Add: the name comes from the file, the file is stored under its hash.
-    let added = lib.add(Source::path(&src).await.unwrap(), NewName::FromSource, &[tag("cats")]).await.unwrap();
+    let added = lib.add(Source::path(&src).await.unwrap(), NewName::FromSource, &[tag("cats")], None).await.unwrap();
     let Added::Created(image) = added else { panic!("expected a new image") };
     assert_eq!(image.name().as_str(), "grumpy-cat");
     assert_eq!(image.tags(), &[tag("cats")]);
@@ -54,16 +54,16 @@ async fn add_tag_rename_delete_round_trip() {
     assert_eq!(std::fs::read(&file).unwrap(), std::fs::read(&src).unwrap());
 
     // The same bytes again are not an error: the stored image comes back untouched.
-    let again = lib.add(Source::path(&src).await.unwrap(), name("other"), &[]).await.unwrap();
+    let again = lib.add(Source::path(&src).await.unwrap(), name("other"), &[], None).await.unwrap();
     assert!(!again.is_created());
     assert_eq!(again.image().name().as_str(), "grumpy-cat");
 
     // A different image can't take the name, ignoring case...
     let other = write_png(tmp.path(), "grumpy_cat.png", 2);
-    let err = lib.add(Source::path(&other).await.unwrap(), name("GRUMPY-CAT"), &[]).await.unwrap_err();
+    let err = lib.add(Source::path(&other).await.unwrap(), name("GRUMPY-CAT"), &[], None).await.unwrap_err();
     assert!(matches!(err, Error::NameTaken(_)));
     // ...but a derived name steps aside instead.
-    let derived = lib.add(Source::path(&other).await.unwrap(), NewName::FromSource, &[]).await.unwrap();
+    let derived = lib.add(Source::path(&other).await.unwrap(), NewName::FromSource, &[], None).await.unwrap();
     assert_eq!(derived.image().name().as_str(), "grumpy-cat-2");
 
     // Tags, idempotently.
@@ -108,12 +108,12 @@ async fn rejects_bad_sources_without_leaving_files() {
     .await
     .unwrap();
 
-    let not_an_image = lib.add(Source::bytes("definitely not a png", None), NewName::FromSource, &[]).await;
+    let not_an_image = lib.add(Source::bytes("definitely not a png", None), NewName::FromSource, &[], None).await;
     assert!(matches!(not_an_image, Err(Error::UnsupportedMedia)));
 
     let mut huge = png_bytes(1, false);
     huge.resize(4096, 0);
-    let too_large = lib.add(Source::bytes(huge, None), NewName::FromSource, &[]).await;
+    let too_large = lib.add(Source::bytes(huge, None), NewName::FromSource, &[], None).await;
     assert!(matches!(too_large, Err(Error::TooLarge { limit: 1024 })));
 
     let missing = Source::path(tmp.path().join("nope.png")).await;
@@ -135,8 +135,8 @@ async fn thumbnails_keep_transparency() {
     let tmp = tempfile::tempdir().unwrap();
     let lib = open(tmp.path()).await;
 
-    let opaque = lib.add(Source::bytes(png_bytes(1, false), None), name("opaque"), &[]).await.unwrap();
-    let clear = lib.add(Source::bytes(png_bytes(2, true), None), name("clear"), &[]).await.unwrap();
+    let opaque = lib.add(Source::bytes(png_bytes(1, false), None), name("opaque"), &[], None).await.unwrap();
+    let clear = lib.add(Source::bytes(png_bytes(2, true), None), name("clear"), &[], None).await.unwrap();
 
     let opaque_thumb = lib.thumbnail(opaque.image().hash(), ThumbSize::Grid).await.unwrap();
     let clear_thumb = lib.thumbnail(clear.image().hash(), ThumbSize::Grid).await.unwrap();
@@ -305,7 +305,7 @@ async fn watch_streams_edits_and_resumes() {
     let lib = open(tmp.path()).await;
 
     // `None` starts from now: earlier edits aren't replayed.
-    let early = lib.add(Source::bytes(png_bytes(1, false), None), name("early"), &[]).await.unwrap().into_image();
+    let early = lib.add(Source::bytes(png_bytes(1, false), None), name("early"), &[], None).await.unwrap().into_image();
     let mut feed = Box::pin(lib.watch(None).await.unwrap());
     let edits = tokio::spawn({
         let lib = lib.clone();
@@ -346,7 +346,7 @@ async fn watch_sees_other_processes() {
     let cli = open(tmp.path()).await;
 
     let mut feed = Box::pin(server.watch(None).await.unwrap());
-    let added = cli.add(Source::bytes(png_bytes(1, false), None), name("cat"), &[]).await.unwrap();
+    let added = cli.add(Source::bytes(png_bytes(1, false), None), name("cat"), &[], None).await.unwrap();
     let event = change(next_change(&mut feed).await);
     assert_eq!((event.kind, &event.image), (ChangeKind::Added, added.image().hash()));
     assert_eq!(event.detail.as_deref(), Some("cat"));
@@ -358,8 +358,8 @@ async fn sweep_removes_crash_leftovers_and_reports_the_rest() {
     let lib = open(tmp.path()).await;
     let root = tmp.path().join("library");
 
-    let kept = lib.add(Source::bytes(png_bytes(1, false), None), name("kept"), &[]).await.unwrap().into_image();
-    let lost = lib.add(Source::bytes(png_bytes(2, false), None), name("lost"), &[]).await.unwrap().into_image();
+    let kept = lib.add(Source::bytes(png_bytes(1, false), None), name("kept"), &[], None).await.unwrap().into_image();
+    let lost = lib.add(Source::bytes(png_bytes(2, false), None), name("lost"), &[], None).await.unwrap().into_image();
     lib.thumbnail(&kept, ThumbSize::Grid).await.unwrap();
     assert!(lib.check().await.unwrap().is_clean());
 
@@ -395,4 +395,27 @@ async fn sweep_removes_crash_leftovers_and_reports_the_rest() {
     let after = lib.check().await.unwrap();
     assert_eq!(after.missing_files, vec![lost.hash().clone()]);
     assert!(after.orphan_files.is_empty() && after.stale_staging.is_empty() && after.orphan_thumbnails.is_empty());
+}
+
+#[tokio::test]
+async fn add_keeps_a_given_created_at() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+
+    let at = kura_core::parse_created_at("2026-05-14 00:29:43").unwrap();
+    assert_eq!(at, kura_core::parse_created_at("2026-05-14T00:29:43Z").unwrap());
+    let Added::Created(old) =
+        lib.add(Source::bytes(png_bytes(1, false), None), name("old"), &[], Some(at)).await.unwrap()
+    else {
+        panic!("expected a new image");
+    };
+    assert_eq!(old.created_at(), at);
+
+    // Newest first: the backdated image sorts after one added now.
+    lib.add(Source::bytes(png_bytes(2, false), None), name("new"), &[], None).await.unwrap();
+    let names: Vec<_> = lib.list(&ImageFilter::all()).await.unwrap().iter().map(|i| i.name().to_string()).collect();
+    assert_eq!(names, ["new", "old"]);
+
+    assert!(kura_core::parse_created_at("yesterday").is_err());
+    assert!(kura_core::parse_created_at("2999-01-01T00:00:00Z").is_err());
 }

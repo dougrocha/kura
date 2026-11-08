@@ -14,7 +14,7 @@ use axum::{
 use futures::{Stream, StreamExt};
 use kura_core::{
     Added, ChangeSeq, FetchPolicy, HttpUrl, ImageFilter, ImageName, ImageRef, Library, NewName, Source, Tag, ThumbSize,
-    WatchEvent,
+    WatchEvent, parse_created_at,
 };
 use tokio_util::io::ReaderStream;
 
@@ -73,9 +73,10 @@ async fn upload_image(
 ) -> ApiResult<(StatusCode, Json<wire::Image>)> {
     let name = optional_name(q.name.as_deref())?;
     let tags = Tag::parse_list(&q.tags)?;
+    let created_at = q.created_at.as_deref().map(parse_created_at).transpose()?;
     // The body streams into kura-core, which enforces the size limit as it reads.
     let source = Source::stream(body.into_data_stream(), q.file_name);
-    Ok(added_response(lib.add(source, name, &tags).await?))
+    Ok(added_response(lib.add(source, name, &tags, created_at).await?))
 }
 
 async fn import_image(
@@ -85,9 +86,10 @@ async fn import_image(
     let url = HttpUrl::parse(&body.url)?;
     let name = optional_name(body.name.as_deref())?;
     let tags = body.tags.iter().map(|t| Tag::parse(t)).collect::<Result<Vec<_>, _>>()?;
+    let created_at = body.created_at.as_deref().map(parse_created_at).transpose()?;
     // Callers are remote: only public addresses, never the server's own network.
     let source = Source::fetch(&url, &FetchPolicy::public_only()).await?;
-    Ok(added_response(lib.add(source, name, &tags).await?))
+    Ok(added_response(lib.add(source, name, &tags, created_at).await?))
 }
 
 async fn get_image(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<wire::Image>> {
