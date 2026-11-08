@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The TUI's layout: images on the left, the selected one's preview on the
-/// right with its tags underneath.
+/// right with its tags underneath. Liquid Glass comes from the system
+/// containers (sidebar, toolbar) plus glass tag chips over the preview.
 struct ContentView: View {
     @Environment(LibraryModel.self) private var library
 
@@ -11,43 +12,55 @@ struct ContentView: View {
             List(library.images, selection: $library.selection) { image in
                 ImageRow(image: image)
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 260)
-            .overlay { sidebarPlaceholder }
+            .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
-            if let image = library.selected {
-                ImageDetail(image: image)
-            } else {
-                ContentUnavailableView("No Image Selected", systemImage: "photo")
+            ZStack {
+                if let image = library.selected {
+                    ImageDetail(image: image)
+                } else if library.error == nil && !library.isStarting {
+                    ContentUnavailableView(
+                        library.images.isEmpty ? "No Images" : "No Image Selected",
+                        systemImage: "photo.on.rectangle.angled",
+                        description: Text(library.images.isEmpty ? "Add some with `kura add <file>`." : "")
+                    )
+                }
             }
+            .overlay { status }
         }
         .navigationTitle("Kura")
-        .navigationSubtitle("\(library.images.count) images" + (library.isLive ? " · live" : ""))
+        .navigationSubtitle(subtitle)
         .toolbar {
-            Button {
-                Task { await library.load() }
-            } label: {
-                Label("Reload", systemImage: "arrow.clockwise")
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await library.load() }
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                }
+                .disabled(library.client == nil || library.isLoading)
             }
-            .disabled(library.isLoading)
         }
-        .task {
-            await library.load()
-            await library.follow()
-        }
+        .task { await library.run() }
     }
 
-    @ViewBuilder private var sidebarPlaceholder: some View {
+    private var subtitle: String {
+        if library.isStarting { return "Starting…" }
+        let count = "\(library.images.count) images"
+        return library.isLive ? "\(count) · Live" : count
+    }
+
+    @ViewBuilder private var status: some View {
         if let error = library.error {
             ContentUnavailableView {
-                Label("Can't Reach Kura", systemImage: "bolt.horizontal.circle")
+                Label("Kura Isn't Available", systemImage: "exclamationmark.triangle")
             } description: {
-                Text("\(error)\n\nStart the server with `just serve`.")
+                Text(error)
             } actions: {
-                Button("Try Again") { Task { await library.load() } }
+                Button("Try Again") { Task { await library.retry() } }
+                    .buttonStyle(.glassProminent)
             }
-        } else if library.images.isEmpty && !library.isLoading {
-            ContentUnavailableView("No Images", systemImage: "photo.stack",
-                                   description: Text("Add some with `just run add <file>`."))
+            .background(.background)
+        } else if library.isStarting {
+            ProgressView("Opening your library…")
         }
     }
 }
@@ -58,13 +71,13 @@ struct ImageRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AsyncImage(url: library.client.thumbnailURL(image, size: "grid")) { thumb in
+            AsyncImage(url: library.client?.thumbnailURL(image, size: "grid")) { thumb in
                 thumb.resizable().scaledToFill()
             } placeholder: {
                 Color.secondary.opacity(0.15)
             }
-            .frame(width: 36, height: 36)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .frame(width: 40, height: 40)
+            .clipShape(.rect(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(image.name).lineLimit(1)
@@ -76,7 +89,7 @@ struct ImageRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
 
@@ -85,22 +98,22 @@ struct ImageDetail: View {
     let image: KuraImage
 
     var body: some View {
-        VStack(spacing: 0) {
-            AsyncImage(url: library.client.thumbnailURL(image, size: "preview")) { phase in
-                switch phase {
-                case .success(let preview):
-                    preview.resizable().scaledToFit()
-                case .failure:
-                    ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
-                default:
-                    ProgressView()
-                }
+        AsyncImage(url: library.client?.thumbnailURL(image, size: "preview")) { phase in
+            switch phase {
+            case .success(let preview):
+                preview.resizable().scaledToFit()
+            case .failure:
+                ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
+            default:
+                ProgressView()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding()
-
-            Divider()
-            TagBar(tags: image.tags)
+        }
+        .padding(24)
+        .padding(.bottom, 44)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The tags float over the preview on glass, like the TUI's tag bar.
+        .overlay(alignment: .bottom) {
+            TagBar(tags: image.tags).padding(14)
         }
         .navigationTitle(image.name)
     }
@@ -110,25 +123,27 @@ struct TagBar: View {
     let tags: [String]
 
     var body: some View {
-        HStack {
-            Label("Tags", systemImage: "tag").foregroundStyle(.secondary)
-            if tags.isEmpty {
-                Text("none").foregroundStyle(.tertiary)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(tags, id: \.self) { tag in
-                            Text(tag)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(.quaternary, in: Capsule())
-                        }
+        GlassEffectContainer(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "tag")
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .glassEffect(.regular, in: .circle)
+                if tags.isEmpty {
+                    Text("No tags")
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .glassEffect(.regular, in: .capsule)
+                } else {
+                    ForEach(tags, id: \.self) { tag in
+                        Text(tag)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .glassEffect(.regular, in: .capsule)
                     }
                 }
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 40)
     }
 }

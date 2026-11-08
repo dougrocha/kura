@@ -25,12 +25,6 @@ struct KuraError: Decodable, LocalizedError, Sendable {
 struct KuraClient: Sendable {
     let baseURL: URL
 
-    /// `KURA_URL`, or the server's default address.
-    static func fromEnvironment() -> KuraClient {
-        let raw = ProcessInfo.processInfo.environment["KURA_URL"] ?? "http://127.0.0.1:7878"
-        return KuraClient(baseURL: URL(string: raw) ?? URL(string: "http://127.0.0.1:7878")!)
-    }
-
     func images() async throws -> [KuraImage] {
         try await get("/images")
     }

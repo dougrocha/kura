@@ -41,6 +41,12 @@ pub struct ServeArgs {
     /// (or another proxy) in front to share it.
     #[arg(short, long, default_value = "127.0.0.1:7878")]
     pub bind: SocketAddr,
+
+    /// Exit when stdin closes. For an app that runs the server as a child
+    /// process: the app holds the other end, so when it quits or crashes, its
+    /// server goes too instead of lingering in the background.
+    #[arg(long, hide = true)]
+    pub exit_with_stdin: bool,
 }
 
 /// Open the library at `paths` and serve it until the process exits.
@@ -54,7 +60,15 @@ pub async fn run(paths: LibraryPaths, args: ServeArgs) -> Result<(), Box<dyn std
     if !health.missing_files.is_empty() {
         println!("kura-server: {} image(s) are missing their file; run `kura doctor`", health.missing_files.len());
     }
+    if args.exit_with_stdin {
+        tokio::spawn(async {
+            let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut tokio::io::sink()).await;
+            // SQLite (WAL) and the add pipeline are crash-safe, so a hard exit is fine.
+            std::process::exit(0);
+        });
+    }
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    // Apps that start the server read this line to learn the port (`--bind 127.0.0.1:0`).
     println!("kura-server listening on http://{}", listener.local_addr()?);
     axum::serve(listener, router(library)).await?;
     Ok(())

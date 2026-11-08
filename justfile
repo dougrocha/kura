@@ -11,6 +11,7 @@
 env := env("KURA_ENV", "dev")
 bind := env("KURA_BIND", "127.0.0.1:7878")
 dev_library := justfile_directory() / ".kura-dev"
+library_path := if env == "dev" { dev_library } else { "" }
 
 library_flag := if env == "dev" { "--library '" + dev_library + "'" } else if env == "prod" { "" } else { error("KURA_ENV must be dev or prod, not '" + env + "'") }
 profile_flag := if env == "prod" { "--release" } else { "" }
@@ -47,21 +48,26 @@ doctor *args:
 events:
     curl -sN http://{{bind}}/events
 
-# The SwiftUI Mac app, talking to the server at KURA_BIND (start it with `just serve`)
+# The Mac app from source (`swift run`); it starts its own server for this environment
 mac:
-    cd mac && KURA_URL=http://{{bind}} swift run
+    cargo build {{profile_flag}} -q -p kura-server --bin kura-server
+    cd mac && KURA_BIN="{{justfile_directory()}}/target/{{target_dir}}/kura-server" KURA_LIBRARY="{{library_path}}" swift run
 
-# Server and Mac app together; stops the server when the app quits
-app:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build {{profile_flag}} -q --bin kura
-    target/{{target_dir}}/kura {{library_flag}} serve --bind {{bind}} &
-    server=$!
-    trap 'kill $server 2>/dev/null' EXIT
-    cd mac && KURA_URL=http://{{bind}} swift run
+# Build mac/build/Kura.app (release, server inside)
+bundle:
+    mac/bundle.sh
 
-# Open the Mac app in Xcode (Product > Run, or ⌘R)
+# Build and open Kura.app on this environment's library
+app: bundle
+    open -n {{ if env == "dev" { "--env KURA_LIBRARY='" + dev_library + "' " } else { "" } }}mac/build/Kura.app
+
+# Install Kura.app into /Applications (your real library, like any app)
+install: bundle
+    rm -rf /Applications/Kura.app
+    cp -R mac/build/Kura.app /Applications/
+    @echo "Installed /Applications/Kura.app"
+
+# Open the Mac app in Xcode (set KURA_BIN in the scheme's environment, or run `just bundle`)
 xcode:
     open mac/Package.swift
 

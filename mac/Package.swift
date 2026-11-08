@@ -1,9 +1,10 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "Kura",
-    platforms: [.macOS(.v14)],
+    // Liquid Glass (glassEffect, glass button styles) starts at macOS 26.
+    platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(name: "Kura", path: "Sources/Kura")
     ]
