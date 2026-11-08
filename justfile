@@ -47,6 +47,24 @@ doctor *args:
 events:
     curl -sN http://{{bind}}/events
 
+# The SwiftUI Mac app, talking to the server at KURA_BIND (start it with `just serve`)
+mac:
+    cd mac && KURA_URL=http://{{bind}} swift run
+
+# Server and Mac app together; stops the server when the app quits
+app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build {{profile_flag}} -q --bin kura
+    target/{{target_dir}}/kura {{library_flag}} serve --bind {{bind}} &
+    server=$!
+    trap 'kill $server 2>/dev/null' EXIT
+    cd mac && KURA_URL=http://{{bind}} swift run
+
+# Open the Mac app in Xcode (Product > Run, or ⌘R)
+xcode:
+    open mac/Package.swift
+
 # ---------------------------------------------------------------- debug
 
 # Run a kura command under lldb, e.g. `just debug list`
