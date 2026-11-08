@@ -55,6 +55,12 @@ pub enum Commands {
     Rename { image: ImageRef, new_name: ImageName },
     /// Browse the library in the terminal
     Tui,
+    /// Check that the database and the files on disk agree
+    Doctor {
+        /// Also remove what crashes left behind (orphan files, stale uploads, old thumbnails)
+        #[arg(long)]
+        fix: bool,
+    },
     /// Delete the whole library: images, database and thumbnails
     Nuke,
     /// Serve the library over HTTP

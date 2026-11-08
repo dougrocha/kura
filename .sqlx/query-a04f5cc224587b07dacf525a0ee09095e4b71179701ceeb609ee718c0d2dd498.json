@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM changes WHERE seq <= (SELECT MAX(seq) FROM changes) - ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a04f5cc224587b07dacf525a0ee09095e4b71179701ceeb609ee718c0d2dd498"
+}

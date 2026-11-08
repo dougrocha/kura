@@ -3,9 +3,7 @@ mod image_protocol_cache;
 mod tui;
 
 use clap::{CommandFactory, Parser};
-use kura_core::{
-    Added, FetchPolicy, HttpUrl, ImageFilter, ImageHash, ImageRef, Library, LibraryPaths, Source,
-};
+use kura_core::{Added, FetchPolicy, HttpUrl, ImageFilter, ImageHash, ImageRef, Library, LibraryPaths, Source};
 use miette::{IntoDiagnostic, Result, miette};
 
 use crate::{
@@ -111,7 +109,43 @@ async fn run(lib: &Library, command: Commands) -> kura_core::Result<()> {
             let edited = lib.rename(image, new_name).await?;
             println!("Renamed to {}", edited.image.name());
         }
+        Commands::Doctor { fix } => doctor(lib, fix).await?,
         Commands::Tui | Commands::Nuke | Commands::Serve(_) => unreachable!("handled in main"),
+    }
+    Ok(())
+}
+
+async fn doctor(lib: &Library, fix: bool) -> kura_core::Result<()> {
+    let health = if fix { lib.sweep().await? } else { lib.check().await? };
+    let action = if fix { "removed" } else { "found" };
+    let report = |label: &str, paths: Vec<String>| {
+        if !paths.is_empty() {
+            println!("{label} ({}):", paths.len());
+            for path in paths {
+                println!("  {path}");
+            }
+        }
+    };
+    let show = |paths: &[std::path::PathBuf]| paths.iter().map(|p| p.display().to_string()).collect();
+
+    let missing = health.missing_files.iter().map(ToString::to_string).collect();
+    report("Images whose file is missing (restore it, or `kura remove <hash>`)", missing);
+    report(&format!("Orphan image files, {action}"), show(&health.orphan_files));
+    report(&format!("Unfinished uploads, {action}"), show(&health.stale_staging));
+    report(&format!("Stale thumbnails, {action}"), show(&health.orphan_thumbnails));
+    report("Files kura didn't create (left alone)", show(&health.foreign_files));
+    if health.old_changes > 0 {
+        println!("Old change-log entries, {action}: {}", health.old_changes);
+    }
+
+    let sweepable = !health.orphan_files.is_empty()
+        || !health.stale_staging.is_empty()
+        || !health.orphan_thumbnails.is_empty()
+        || health.old_changes > 0;
+    if health.is_clean() {
+        println!("Library is healthy.");
+    } else if !fix && sweepable {
+        println!("Run `kura doctor --fix` to clean up.");
     }
     Ok(())
 }

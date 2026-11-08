@@ -14,6 +14,7 @@ use sqlx::{
 };
 
 use crate::{
+    changes::{Change, ChangeKind, ChangeSeq, Notifier},
     error::{Error, Result, ResultExt, internal},
     model::{Image, ImageHash, ImageName, ImageRef, Tag, TagCount},
 };
@@ -21,6 +22,7 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct Store {
     pool: SqlitePool,
+    notifier: Notifier,
 }
 
 /// Narrows the one image query. All `None` means every image.
@@ -107,11 +109,15 @@ impl Store {
             .foreign_keys(true)
             .busy_timeout(std::time::Duration::from_secs(10));
         let pool = SqlitePool::connect_with(options).await.internal("opening database")?;
-        Ok(Self { pool })
+        Ok(Self { pool, notifier: Notifier::new() })
     }
 
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    pub(crate) fn notifier(&self) -> &Notifier {
+        &self.notifier
     }
 
     pub(crate) async fn images(&self, q: Query<'_>) -> Result<Vec<Image>> {
@@ -119,16 +125,12 @@ impl Store {
     }
 
     pub(crate) async fn tag_counts(&self) -> Result<Vec<TagCount>> {
-        let rows = sqlx::query!(
-            r#"SELECT tag AS "tag!", COUNT(*) AS "count!: i64" FROM tags GROUP BY tag ORDER BY tag"#
-        )
-        .fetch_all(&self.pool)
-        .await
-        .internal("loading tags")?;
-        Ok(rows
-            .into_iter()
-            .map(|r| TagCount { tag: Tag::from_row(r.tag), count: r.count.unsigned_abs() })
-            .collect())
+        let rows =
+            sqlx::query!(r#"SELECT tag AS "tag!", COUNT(*) AS "count!: i64" FROM tags GROUP BY tag ORDER BY tag"#)
+                .fetch_all(&self.pool)
+                .await
+                .internal("loading tags")?;
+        Ok(rows.into_iter().map(|r| TagCount { tag: Tag::from_row(r.tag), count: r.count.unsigned_abs() }).collect())
     }
 
     /// Start a write. `BEGIN IMMEDIATE` takes SQLite's write lock up front, so
@@ -136,12 +138,68 @@ impl Store {
     /// transaction can't be raced. File creation and deletion happen while this
     /// lock is held (see `Library::add` and `Library::collect`).
     pub(crate) async fn begin_write(&self) -> Result<WriteTx> {
-        let tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
+        let tx = self.pool.begin_with("BEGIN IMMEDIATE").await.internal("starting write")?;
+        Ok(WriteTx { tx, notifier: self.notifier.clone() })
+    }
+
+    pub(crate) async fn changes_after(&self, after: u64, limit: i64) -> Result<Vec<Change>> {
+        let after = i64::try_from(after).unwrap_or(i64::MAX);
+        let rows = sqlx::query!(
+            r#"SELECT seq AS "seq!: i64", kind AS "kind!", image_hash AS "image_hash!", detail,
+                      created_at AS "created_at!"
+               FROM changes WHERE seq > ? ORDER BY seq LIMIT ?"#,
+            after,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .internal("loading changes")?;
+        rows.into_iter()
+            .map(|r| {
+                let kind = ChangeKind::parse(&r.kind)
+                    .ok_or_else(|| internal("loading changes", format!("unknown change kind '{}'", r.kind)))?;
+                Ok(Change {
+                    seq: ChangeSeq(r.seq.unsigned_abs()),
+                    kind,
+                    image: ImageHash::from_row(r.image_hash),
+                    detail: r.detail,
+                    at: parse_sqlite_time(&r.created_at)?,
+                })
+            })
+            .collect()
+    }
+
+    /// The oldest seq still in the log (if any) and the newest ever written (0 if none).
+    pub(crate) async fn change_bounds(&self) -> Result<(Option<u64>, u64)> {
+        // `sqlite_sequence` remembers the newest seq even after the log is trimmed empty.
+        let row = sqlx::query!(
+            r#"SELECT (SELECT MIN(seq) FROM changes) AS "oldest: i64",
+                      COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'changes'), 0) AS "newest!: i64""#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .internal("loading changes")?;
+        Ok((row.oldest.map(i64::unsigned_abs), row.newest.unsigned_abs()))
+    }
+
+    pub(crate) async fn stored_files(&self) -> Result<Vec<(ImageHash, String)>> {
+        let rows = sqlx::query!(r#"SELECT hash AS "hash!", extension AS "extension!" FROM images"#)
+            .fetch_all(&self.pool)
             .await
-            .internal("starting write")?;
-        Ok(WriteTx { tx })
+            .internal("loading images")?;
+        Ok(rows.into_iter().map(|r| (ImageHash::from_row(r.hash), r.extension)).collect())
+    }
+
+    /// How many change rows are older than the newest `keep`.
+    pub(crate) async fn trimmable_changes(&self, keep: i64) -> Result<u64> {
+        let n = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "n!: i64" FROM changes WHERE seq <= (SELECT MAX(seq) FROM changes) - ?"#,
+            keep
+        )
+        .fetch_one(&self.pool)
+        .await
+        .internal("counting changes")?;
+        Ok(n.unsigned_abs())
     }
 
     pub(crate) async fn close(&self) {
@@ -149,30 +207,9 @@ impl Store {
     }
 }
 
-/// What a change-log row records.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ChangeKind {
-    Added,
-    Renamed,
-    Tagged,
-    Untagged,
-    Deleted,
-}
-
-impl ChangeKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Added => "added",
-            Self::Renamed => "renamed",
-            Self::Tagged => "tagged",
-            Self::Untagged => "untagged",
-            Self::Deleted => "deleted",
-        }
-    }
-}
-
 pub(crate) struct WriteTx {
     tx: Transaction<'static, Sqlite>,
+    notifier: Notifier,
 }
 
 impl WriteTx {
@@ -181,11 +218,7 @@ impl WriteTx {
     }
 
     pub(crate) async fn resolve(&mut self, r: &ImageRef) -> Result<Image> {
-        self.images(Query::by_ref(r))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::NotFound(r.clone()))
+        self.images(Query::by_ref(r)).await?.into_iter().next().ok_or_else(|| Error::NotFound(r.clone()))
     }
 
     pub(crate) async fn name_taken(&mut self, name: &ImageName) -> Result<bool> {
@@ -276,29 +309,32 @@ impl WriteTx {
     /// Append to the change log, in this transaction.
     pub(crate) async fn record(&mut self, kind: ChangeKind, hash: &ImageHash, detail: Option<&str>) -> Result<()> {
         let (kind_str, hash_str) = (kind.as_str(), hash.as_str());
-        sqlx::query!(
-            "INSERT INTO changes (kind, image_hash, detail) VALUES (?, ?, ?)",
-            kind_str,
-            hash_str,
-            detail
-        )
-        .execute(&mut *self.tx)
-        .await
-        .internal("recording change")?;
+        sqlx::query!("INSERT INTO changes (kind, image_hash, detail) VALUES (?, ?, ?)", kind_str, hash_str, detail)
+            .execute(&mut *self.tx)
+            .await
+            .internal("recording change")?;
         Ok(())
     }
 
+    /// Drop change rows older than the newest `keep`. Feeds resuming from
+    /// before them get `WatchEvent::Resync`.
+    pub(crate) async fn trim_changes(&mut self, keep: i64) -> Result<u64> {
+        let result = sqlx::query!("DELETE FROM changes WHERE seq <= (SELECT MAX(seq) FROM changes) - ?", keep)
+            .execute(&mut *self.tx)
+            .await
+            .internal("trimming changes")?;
+        Ok(result.rows_affected())
+    }
+
     pub(crate) async fn commit(self) -> Result<()> {
-        self.tx.commit().await.internal("committing")
+        self.tx.commit().await.internal("committing")?;
+        self.notifier.notify();
+        Ok(())
     }
 }
 
 /// Within a write, the name index is the only unique constraint an insert or
 /// rename can hit (hash conflicts are handled by `ON CONFLICT`).
 fn name_error(err: sqlx::Error, name: &ImageName) -> Error {
-    if is_unique_violation(&err) {
-        Error::NameTaken(name.clone())
-    } else {
-        internal("writing image", err)
-    }
+    if is_unique_violation(&err) { Error::NameTaken(name.clone()) } else { internal("writing image", err) }
 }

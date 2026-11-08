@@ -115,8 +115,10 @@ impl Layout {
         }
     }
 
-    /// Remove staging files older than `max_age`: leftovers of a crashed add.
-    pub(crate) async fn clear_stale_staging(&self, max_age: Duration) -> Result<()> {
+    /// Staging files older than `max_age`: leftovers of a crashed add. Younger
+    /// ones may belong to an add running right now, in any process.
+    pub(crate) async fn stale_staging(&self, max_age: Duration) -> Result<Vec<PathBuf>> {
+        let mut stale = Vec::new();
         let mut entries = tokio::fs::read_dir(&self.staging).await.internal("reading staging dir")?;
         while let Some(entry) = entries.next_entry().await.internal("reading staging dir")? {
             let age = entry
@@ -126,10 +128,44 @@ impl Layout {
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| SystemTime::now().duration_since(t).ok());
             if age.is_some_and(|age| age > max_age) {
-                let _ = tokio::fs::remove_file(entry.path()).await;
+                stale.push(entry.path());
             }
         }
-        Ok(())
+        Ok(stale)
+    }
+
+    pub(crate) async fn clear_stale_staging(&self, max_age: Duration) -> Result<Vec<PathBuf>> {
+        let stale = self.stale_staging(max_age).await?;
+        for path in &stale {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        Ok(stale)
+    }
+
+    /// What's in the picture folder: files named like kura's, and everything
+    /// else. Hidden files (`.DS_Store`, the staging folder) are skipped.
+    pub(crate) async fn scan(&self) -> Result<PictureScan> {
+        let mut scan = PictureScan::default();
+        let mut entries = tokio::fs::read_dir(&self.pictures).await.internal("reading picture folder")?;
+        while let Some(entry) = entries.next_entry().await.internal("reading picture folder")? {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                scan.foreign.push(entry.path());
+                continue;
+            };
+            if file_name.starts_with('.') {
+                continue;
+            }
+            let stored = file_name
+                .split_once('.')
+                .and_then(|(stem, ext)| Some((stem.parse::<ImageHash>().ok()?, ext)))
+                .filter(|(hash, ext)| file_name == format!("{hash}.{ext}") && !ext.contains('.'));
+            match stored {
+                Some((hash, ext)) => scan.stored.push((hash, ext.to_owned())),
+                None => scan.foreign.push(entry.path()),
+            }
+        }
+        Ok(scan)
     }
 
     /// Make a rename durable. Best effort: a failure here isn't worth failing the add.
@@ -141,15 +177,21 @@ impl Layout {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PictureScan {
+    /// `<hash>.<ext>` files, as (hash, extension).
+    pub(crate) stored: Vec<(ImageHash, String)>,
+    /// Anything else that isn't hidden, including non-UTF-8 names.
+    pub(crate) foreign: Vec<PathBuf>,
+}
+
 fn sniff(head: &[u8]) -> Result<MediaType> {
     MediaType::from_bytes(head).map_err(|_| Error::UnsupportedMedia)
 }
 
 fn unique_name() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     format!("{}-{nanos}-{}.part", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
@@ -206,10 +248,5 @@ impl LockGuard {
 }
 
 fn open_lock_file(path: &Path) -> Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .internal("opening lock file")
+    OpenOptions::new().create(true).truncate(false).write(true).open(path).internal("opening lock file")
 }

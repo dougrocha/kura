@@ -16,17 +16,20 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use directories::{ProjectDirs, UserDirs};
 
+use futures::Stream;
+
 use crate::{
+    changes::{self, ChangeKind, ChangeSeq, WatchEvent},
     error::{Error, Result, ResultExt},
+    health::{self, Findings, Health, KEEP_CHANGES, STALE_STAGING},
     model::{Added, Edited, Image, ImageFilter, ImageHash, ImageName, ImageRef, MediaType, NewName, Tag, TagCount},
     source::Source,
     store::{
-        ChangeKind, Query, Store,
+        Query, Store,
         files::{Layout, LockGuard},
         upgrade,
     },
@@ -58,11 +61,7 @@ impl LibraryPaths {
             .join(APP_NAME);
         let project = ProjectDirs::from("com", "", APP_NAME)
             .ok_or_else(|| Error::Setup("can't find the app data folder".into()))?;
-        Ok(Self {
-            pictures,
-            data: project.data_local_dir().to_path_buf(),
-            cache: project.cache_dir().to_path_buf(),
-        })
+        Ok(Self { pictures, data: project.data_local_dir().to_path_buf(), cache: project.cache_dir().to_path_buf() })
     }
 
     /// Everything under one folder: `root/{pictures,data,cache}`.
@@ -79,11 +78,7 @@ impl LibraryPaths {
     /// Delete the whole library (images, database, thumbnails) without opening it.
     /// Fails with `LibraryInUse` while any process has it open.
     pub fn destroy(self) -> Result<()> {
-        let _lock = if self.data.exists() {
-            Some(LockGuard::exclusive(&self.data.join("kura.lock"))?)
-        } else {
-            None
-        };
+        let _lock = if self.data.exists() { Some(LockGuard::exclusive(&self.data.join("kura.lock"))?) } else { None };
         for dir in [&self.pictures, &self.cache, &self.data] {
             if dir.exists() {
                 std::fs::remove_dir_all(dir).internal("deleting library")?;
@@ -173,7 +168,7 @@ impl Library {
         layout.create_dirs().await?;
         let store = Store::open(&paths.data.join("kura.db")).await?;
         upgrade::run(&store, &layout).await?;
-        layout.clear_stale_staging(Duration::from_secs(60 * 60)).await?;
+        layout.clear_stale_staging(STALE_STAGING).await?;
         let thumbs = Thumbs::open(paths.cache).await?;
 
         Ok(Self { inner: Arc::new(Inner { store, layout, thumbs, limits, _lock: lock }) })
@@ -199,13 +194,7 @@ impl Library {
     /// One image by hash or name (names ignore case).
     pub async fn image(&self, id: impl Into<ImageRef>) -> Result<Image> {
         let id = id.into();
-        self.inner
-            .store
-            .images(Query::by_ref(&id))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or(Error::NotFound(id))
+        self.inner.store.images(Query::by_ref(&id)).await?.into_iter().next().ok_or(Error::NotFound(id))
     }
 
     /// Every tag with how many images have it, alphabetically.
@@ -343,6 +332,66 @@ impl Library {
         Ok(image)
     }
 
+    // ---------------------------------------------------------------- changes
+
+    /// Every edit after `since`, then each new one as it's committed, forever.
+    /// `None` starts after the newest edit committed when this is called.
+    /// Edits made by other processes (the CLI while a server runs) arrive
+    /// within about a second.
+    ///
+    /// Pass back the last `seq` you handled to resume. If the log no longer
+    /// reaches back that far, or never reached it, the feed starts with
+    /// `WatchEvent::Resync`: reload with `list`, then carry on.
+    pub async fn watch(
+        &self,
+        since: Option<ChangeSeq>,
+    ) -> Result<impl Stream<Item = Result<WatchEvent>> + Send + 'static + use<>> {
+        changes::watch(self.inner.store.clone(), since).await
+    }
+
+    // ---------------------------------------------------------------- upkeep
+
+    /// Compare the database with the files on disk. Reads only.
+    pub async fn check(&self) -> Result<Health> {
+        Ok(self.findings().await?.health)
+    }
+
+    /// `check`, then remove everything a crash can leave behind: orphan image
+    /// files, stale staging files, orphan thumbnails and old change-log rows.
+    /// Returns what it found. Missing and foreign files are only reported.
+    pub async fn sweep(&self) -> Result<Health> {
+        let Findings { health, orphans } = self.findings().await?;
+
+        // Same rule as `collect`: unlink only under the write lock, after
+        // re-checking, so an add of the same bytes since the scan keeps its file.
+        let mut tx = self.inner.store.begin_write().await?;
+        for (hash, extension) in &orphans {
+            let image = tx.images(Query { hash: Some(hash.as_str()), ..Query::default() }).await?;
+            if image.first().is_none_or(|image| image.extension != *extension) {
+                self.inner.layout.remove_image_file(hash, extension).await?;
+            }
+        }
+        if health.old_changes > 0 {
+            tx.trim_changes(KEEP_CHANGES).await?;
+        }
+        tx.commit().await?;
+
+        for path in health.stale_staging.iter().chain(&health.orphan_thumbnails) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        Ok(health)
+    }
+
+    async fn findings(&self) -> Result<Findings> {
+        let inner = &self.inner;
+        let rows = inner.store.stored_files().await?;
+        let scan = inner.layout.scan().await?;
+        let thumbnails = inner.thumbs.files().await?;
+        let stale = inner.layout.stale_staging(STALE_STAGING).await?;
+        let old_changes = inner.store.trimmable_changes(KEEP_CHANGES).await?;
+        Ok(health::compare(rows, scan, thumbnails, stale, old_changes, |hash, ext| inner.layout.image_path(hash, ext)))
+    }
+
     // ---------------------------------------------------------------- derived files
 
     /// A thumbnail no larger than `size`, made on first use and cached.
@@ -358,13 +407,7 @@ impl Library {
     // ---------------------------------------------------------------- internals
 
     async fn find(&self, hash: &ImageHash) -> Result<Option<Image>> {
-        Ok(self
-            .inner
-            .store
-            .images(Query { hash: Some(hash.as_str()), ..Query::default() })
-            .await?
-            .into_iter()
-            .next())
+        Ok(self.inner.store.images(Query { hash: Some(hash.as_str()), ..Query::default() }).await?.into_iter().next())
     }
 
     /// Remove an image's files if no row references its hash. Holds the write

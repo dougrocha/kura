@@ -113,12 +113,28 @@ impl Thumbs {
     /// Remove every thumbnail of one image.
     pub(crate) async fn remove(&self, hash: &ImageHash) {
         let prefix = format!("{hash}-");
-        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else { return };
+        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else {
+            return;
+        };
         while let Ok(Some(entry)) = entries.next_entry().await {
             if entry.file_name().to_string_lossy().starts_with(&prefix) {
                 let _ = tokio::fs::remove_file(entry.path()).await;
             }
         }
+    }
+
+    /// Every cached file, with the hash of the image it belongs to (`None` for
+    /// files the cache didn't make).
+    pub(crate) async fn files(&self) -> Result<Vec<(Option<ImageHash>, PathBuf)>> {
+        let mut files = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.dir).await.internal("reading thumbnail cache")?;
+        while let Some(entry) = entries.next_entry().await.internal("reading thumbnail cache")? {
+            let file_name = entry.file_name();
+            let hash =
+                file_name.to_str().and_then(|n| n.split_once('-')).and_then(|(stem, _)| stem.parse::<ImageHash>().ok());
+            files.push((hash, entry.path()));
+        }
+        Ok(files)
     }
 
     pub(crate) async fn clear(&self) -> Result<()> {

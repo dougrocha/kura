@@ -89,3 +89,37 @@ pub struct ThumbnailQuery {
     /// `grid` (256 px) or `preview` (1000 px, the default).
     pub size: Option<String>,
 }
+
+/// `GET /events` sends one of these as the `data` of each Server-Sent Event.
+/// The event's `id` is `seq` and its `event` is `kind`. A `resync` event (no
+/// data) means: reload with `GET /images`, then keep listening.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Change {
+    pub seq: u64,
+    /// `added`, `renamed`, `tagged`, `untagged` or `deleted`.
+    pub kind: String,
+    pub hash: String,
+    /// The new name (added, renamed), the tag (tagged, untagged), or the old
+    /// name (deleted).
+    pub detail: Option<String>,
+    pub at: Timestamp,
+}
+
+impl From<&kura_core::Change> for Change {
+    fn from(change: &kura_core::Change) -> Self {
+        Self {
+            seq: change.seq.0,
+            kind: change.kind.as_str().to_owned(),
+            hash: change.image.to_string(),
+            detail: change.detail.clone(),
+            at: change.at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventsQuery {
+    /// Resume after this seq. The `Last-Event-ID` header, which browsers and
+    /// SSE clients send on reconnect, takes precedence.
+    pub since: Option<u64>,
+}

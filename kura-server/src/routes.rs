@@ -1,19 +1,27 @@
+use std::convert::Infallible;
+
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, Query, State},
-    http::{StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::{
+        IntoResponse, Redirect, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{delete, get, post},
 };
+use futures::{Stream, StreamExt};
 use kura_core::{
-    Added, FetchPolicy, HttpUrl, ImageFilter, ImageName, ImageRef, Library, NewName, Source, Tag, ThumbSize,
+    Added, ChangeSeq, FetchPolicy, HttpUrl, ImageFilter, ImageName, ImageRef, Library, NewName, Source, Tag, ThumbSize,
+    WatchEvent,
 };
 use tokio_util::io::ReaderStream;
 
 use crate::{
     error::{ApiError, ApiResult},
-    wire,
+    extract::{self, Json as JsonBody, Path, Query},
+    file, wire,
 };
 
 pub(crate) fn router() -> Router<Library> {
@@ -27,6 +35,9 @@ pub(crate) fn router() -> Router<Library> {
         .route("/images/{id}/tags", post(add_tag))
         .route("/images/{id}/tags/{tag}", delete(remove_tag))
         .route("/tags", get(list_tags))
+        .route("/events", get(events))
+        .fallback(extract::no_route)
+        .method_not_allowed_fallback(extract::wrong_method)
 }
 
 fn image_json(image: &kura_core::Image) -> Json<wire::Image> {
@@ -69,7 +80,7 @@ async fn upload_image(
 
 async fn import_image(
     State(lib): State<Library>,
-    Json(body): Json<wire::Import>,
+    JsonBody(body): JsonBody<wire::Import>,
 ) -> ApiResult<(StatusCode, Json<wire::Image>)> {
     let url = HttpUrl::parse(&body.url)?;
     let name = optional_name(body.name.as_deref())?;
@@ -87,7 +98,7 @@ async fn get_image(State(lib): State<Library>, Path(id): Path<String>) -> ApiRes
 async fn rename_image(
     State(lib): State<Library>,
     Path(id): Path<String>,
-    Json(body): Json<wire::Rename>,
+    JsonBody(body): JsonBody<wire::Rename>,
 ) -> ApiResult<Json<wire::Image>> {
     let id: ImageRef = id.parse()?;
     let edited = lib.rename(id, ImageName::parse(&body.name)?).await?;
@@ -100,7 +111,7 @@ async fn delete_image(State(lib): State<Library>, Path(id): Path<String>) -> Api
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn image_file(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Response> {
+async fn image_file(State(lib): State<Library>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {
     let id: ImageRef = id.parse()?;
     if let ImageRef::Name(_) = id {
         // Names change; send clients to the hash URL, whose bytes never do.
@@ -108,15 +119,7 @@ async fn image_file(State(lib): State<Library>, Path(id): Path<String>) -> ApiRe
         return Ok(Redirect::temporary(&wire::file_url(image.hash())).into_response());
     }
 
-    let file = lib.open_file(id).await?;
-    let content_type = file.media_type().map_or("application/octet-stream", |m| m.as_str());
-    // Streams the file without loading it into memory. Next steps: send
-    // `ETag: "<hash>"` and answer `If-None-Match` with 304, then `Range` with 206.
-    Ok((
-        [(header::CONTENT_TYPE, content_type.to_owned()), (header::CONTENT_LENGTH, file.len().to_string())],
-        Body::from_stream(ReaderStream::new(file.into_file())),
-    )
-        .into_response())
+    file::respond(lib.open_file(id).await?, &headers).await
 }
 
 async fn image_thumbnail(
@@ -131,17 +134,14 @@ async fn image_thumbnail(
     };
     let thumb = lib.thumbnail(id, size).await?;
     let file = thumb.open().await?;
-    Ok((
-        [(header::CONTENT_TYPE, thumb.media_type().as_str())],
-        Body::from_stream(ReaderStream::new(file)),
-    )
+    Ok(([(header::CONTENT_TYPE, thumb.media_type().as_str())], Body::from_stream(ReaderStream::new(file)))
         .into_response())
 }
 
 async fn add_tag(
     State(lib): State<Library>,
     Path(id): Path<String>,
-    Json(body): Json<wire::AddTag>,
+    JsonBody(body): JsonBody<wire::AddTag>,
 ) -> ApiResult<Json<wire::Image>> {
     let id: ImageRef = id.parse()?;
     let edited = lib.tag(id, &[Tag::parse(&body.tag)?]).await?;
@@ -159,9 +159,42 @@ async fn remove_tag(
 
 async fn list_tags(State(lib): State<Library>) -> ApiResult<Json<Vec<wire::TagCount>>> {
     let tags = lib.tags().await?;
-    Ok(Json(
-        tags.into_iter()
-            .map(|t| wire::TagCount { tag: t.tag.to_string(), count: t.count })
-            .collect(),
-    ))
+    Ok(Json(tags.into_iter().map(|t| wire::TagCount { tag: t.tag.to_string(), count: t.count }).collect()))
+}
+
+/// Server-Sent Events: every edit, live. Reconnecting clients send
+/// `Last-Event-ID` and pick up where they left off.
+async fn events(
+    State(lib): State<Library>,
+    Query(q): Query<wire::EventsQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let last_event_id = headers.get("last-event-id").and_then(|v| v.to_str().ok());
+    let since = match last_event_id {
+        Some(id) => Some(id.trim().parse::<u64>().map_err(|_| {
+            ApiError::request(StatusCode::BAD_REQUEST, "invalid_request", "Last-Event-ID must be a change seq")
+        })?),
+        None => q.since,
+    };
+    let feed = lib.watch(since.map(ChangeSeq)).await?;
+    // A failed read ends the stream; the client reconnects with Last-Event-ID.
+    let events = feed
+        .take_while(|event| {
+            if let Err(e) = event {
+                eprintln!("kura-server: change feed: {e:?}");
+            }
+            futures::future::ready(event.is_ok())
+        })
+        .filter_map(|event| futures::future::ready(event.ok().map(|event| Ok(sse_event(&event)))));
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()))
+}
+
+fn sse_event(event: &WatchEvent) -> Event {
+    match event {
+        WatchEvent::Change(change) => {
+            let data = serde_json::to_string(&wire::Change::from(change)).expect("plain data serializes");
+            Event::default().id(change.seq.0.to_string()).event(change.kind.as_str()).data(data)
+        }
+        WatchEvent::Resync => Event::default().event("resync").data(""),
+    }
 }
