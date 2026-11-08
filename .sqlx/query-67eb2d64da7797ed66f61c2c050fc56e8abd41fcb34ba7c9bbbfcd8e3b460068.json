@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT i.hash AS \"hash!\", i.name AS \"name!\", i.extension AS \"extension!\",\n                  i.created_at AS \"created_at!\",\n                  (SELECT json_group_array(tag)\n                   FROM (SELECT tag FROM tags WHERE image_hash = i.hash ORDER BY tag)) AS \"tags!: String\"\n           FROM images i\n           WHERE (?1 IS NULL OR i.hash = ?1)\n             AND (?2 IS NULL OR i.name = ?2 COLLATE NOCASE)\n             AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.image_hash = i.hash AND t.tag = ?3))\n           ORDER BY i.created_at DESC, i.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "hash!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "extension!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "tags!: String",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "67eb2d64da7797ed66f61c2c050fc56e8abd41fcb34ba7c9bbbfcd8e3b460068"
+}

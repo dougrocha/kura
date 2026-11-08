@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM images WHERE hash = ?) AS \"referenced!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "referenced!: bool",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e98e3f0330b322107643bf5d43e63e591d99368414b81c9a6f086f067e5d3ec2"
+}

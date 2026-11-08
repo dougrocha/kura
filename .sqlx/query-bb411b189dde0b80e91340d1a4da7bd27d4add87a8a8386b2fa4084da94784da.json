@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO changes (kind, image_hash, detail) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "bb411b189dde0b80e91340d1a4da7bd27d4add87a8a8386b2fa4084da94784da"
+}

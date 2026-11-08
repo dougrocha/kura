@@ -1,0 +1,21 @@
+[package]
+name = "kura-server"
+description = "HTTP API for a Kura library"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true }
+jiff = { workspace = true }
+kura-core = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+image = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }

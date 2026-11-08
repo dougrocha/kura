@@ -3,11 +3,25 @@ name = "hako"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["tui"]
+# Terminal UI building blocks (ratatui, crossterm, inline images).
+# Disable with `default-features = false` to get only the plain utilities
+# (mime types, urls, clipboard) without pulling in a terminal stack.
+tui = [
+    "dep:crossterm",
+    "dep:futures",
+    "dep:ratatui",
+    "dep:ratatui-image",
+    "dep:tokio",
+    "dep:tokio-util",
+]
+
 [dependencies]
-crossterm = { workspace = true }
-futures = { workspace = true }
-ratatui = { workspace = true }
-ratatui-image = { workspace = true }
+crossterm = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+ratatui-image = { workspace = true, optional = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }

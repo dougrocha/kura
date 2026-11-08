@@ -1,0 +1,24 @@
+[package]
+name = "kura-core"
+description = "Kura's library: image storage, tags and the SQLite database"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+directories = { workspace = true }
+futures = { workspace = true }
+hako = { workspace = true, default-features = false }
+hex = { workspace = true }
+image = { workspace = true }
+jiff = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -6,16 +6,12 @@ use hako::{
     style::{Color, Style},
     widgets::{Block, Borders, Line, List, ListItem, Paragraph, Span},
 };
-use miette::Result;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    State,
-    image_protocol_cache::ImageProtocolCache,
-    images::{Image, ImageWithTags},
-    tags::NewTag,
-};
+use kura_core::{Image, ImageFilter, ImageName, Library, Tag, ThumbSize};
+
+use crate::image_protocol_cache::ImageProtocolCache;
 
 pub enum Action {
     Rename { index: usize, new_name: String },
@@ -24,9 +20,8 @@ pub enum Action {
 }
 
 pub struct KuraApp {
-    #[allow(dead_code)]
-    state: State,
-    images: Vec<ImageWithTags>,
+    lib: Library,
+    images: Vec<Image>,
     scroll_list: ScrollList,
 
     should_quit: bool,
@@ -53,8 +48,8 @@ pub struct KuraApp {
 }
 
 impl KuraApp {
-    pub async fn new(state: State) -> Result<Self> {
-        let images = Image::all(&state).await?;
+    pub async fn new(lib: Library) -> kura_core::Result<Self> {
+        let images = lib.list(&ImageFilter::all()).await?;
 
         let scroll_list = ScrollList::new(images.len());
 
@@ -68,7 +63,7 @@ impl KuraApp {
         let image_protocol = ThreadProtocol::new(resize_tx, None);
 
         let mut app = Self {
-            state,
+            lib,
             images,
             scroll_list,
             image_protocol,
@@ -100,7 +95,7 @@ impl KuraApp {
 
         self.image_protocol.empty_protocol();
 
-        let selected_hash = self.images[selected].image.hash.as_str().to_string();
+        let selected_hash = self.images[selected].hash().to_string();
         if let Some(protocol) = self.protocol_cache.take(&selected_hash) {
             self.image_protocol.replace_protocol(protocol);
         } else {
@@ -116,7 +111,7 @@ impl KuraApp {
         .into_iter()
         .filter(|&i| {
             if let Some(img) = self.images.get(i) {
-                !self.protocol_cache.contains(img.image.hash.as_str())
+                !self.protocol_cache.contains(img.hash().as_str())
             } else {
                 false
             }
@@ -133,38 +128,38 @@ impl KuraApp {
             return;
         };
 
-        let path = img.image.file_path.clone();
-        let hash = img.image.hash.as_str().to_string();
+        let hash = img.hash().clone();
+        let lib = self.lib.clone();
         let picker = self.picker.clone();
         let tx = self.proto_tx.clone();
-        let image_cache = self.state.image_cache.clone();
         let token = self.image_cancellation_token.clone();
 
         tokio::spawn(async move {
-            let hash_for_send = hash.clone();
+            // kura-core makes (or reuses) the thumbnail; decoding it for the
+            // terminal stays here.
+            let Ok(thumb) = lib.thumbnail(&hash, ThumbSize::Preview).await else {
+                return;
+            };
+            let path = thumb.path().to_path_buf();
             let result = tokio::task::spawn_blocking(move || {
                 if token.is_cancelled() {
                     return None;
                 }
-                image_cache
-                    .load_or_cache(&hash, &path)
-                    .ok()
-                    .and_then(|dyn_img| {
-                        if token.is_cancelled() {
-                            return None;
-                        }
-                        Some(picker.new_resize_protocol(dyn_img))
-                    })
+                let dyn_img = image::open(&path).ok()?;
+                if token.is_cancelled() {
+                    return None;
+                }
+                Some(picker.new_resize_protocol(dyn_img))
             })
             .await;
 
             if let Ok(Some(protocol)) = result {
-                let _ = tx.send((hash_for_send, protocol));
+                let _ = tx.send((hash.to_string(), protocol));
             }
         });
     }
 
-    fn selected(&self) -> Option<&ImageWithTags> {
+    fn selected(&self) -> Option<&Image> {
         self.scroll_list.selected().and_then(|i| self.images.get(i))
     }
 
@@ -189,11 +184,11 @@ impl KuraApp {
         let Ok(ctx) = clipboard() else {
             return;
         };
-        let _ = ctx.write_image(&img.image.file_path);
+        let _ = ctx.write_image(&self.lib.path_of(img));
     }
 
     async fn reload_images(&mut self) {
-        if let Ok(images) = Image::all(&self.state).await {
+        if let Ok(images) = self.lib.list(&ImageFilter::all()).await {
             let selected = self.scroll_list.selected();
             self.images = images;
             self.scroll_list = ScrollList::new(self.images.len());
@@ -206,8 +201,9 @@ impl KuraApp {
 
     fn open_selected(&self) {
         let Some(img) = self.selected() else { return };
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&img.image.file_path)
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener)
+            .arg(self.lib.path_of(img))
             .spawn();
     }
 
@@ -275,7 +271,7 @@ impl App for KuraApp {
                         KeyCode::Char('o') => self.open_selected(),
                         KeyCode::Char('r') => {
                             if let Some(img) = self.selected() {
-                                self.rename_input = Some(TextInput::new(img.image.name.clone()));
+                                self.rename_input = Some(TextInput::new(img.name().to_string()));
                             }
                         }
                         KeyCode::Char('t') if self.selected().is_some() => {
@@ -292,7 +288,7 @@ impl App for KuraApp {
                 self.rename_error = None;
                 let selected_hash = self.scroll_list.selected()
                     .and_then(|i| self.images.get(i))
-                    .map(|img| img.image.hash.as_str().to_string());
+                    .map(|img| img.hash().to_string());
                 while let Ok((hash, protocol)) = self.proto_rx.try_recv() {
                     if selected_hash.as_deref() == Some(hash.as_str()) {
                         self.image_protocol.replace_protocol(protocol);
@@ -314,11 +310,11 @@ impl App for KuraApp {
     async fn on_action(&mut self, action: Action) {
         match action {
             Action::Rename { index, new_name } => {
-                match self.images[index]
-                    .image
-                    .rename(&self.state, &new_name)
-                    .await
-                {
+                let result = match ImageName::parse(&new_name) {
+                    Ok(name) => self.lib.rename(self.images[index].hash(), name).await,
+                    Err(e) => Err(e.into()),
+                };
+                match result {
                     Ok(_) => {
                         self.rename_input = None;
                         self.reload_images().await;
@@ -330,8 +326,11 @@ impl App for KuraApp {
                 }
             }
             Action::Tag { index, tag } => {
-                let hash = &self.images[index].image.hash;
-                match NewTag::new(hash, &tag).insert(&self.state).await {
+                let result = match Tag::parse(&tag) {
+                    Ok(tag) => self.lib.tag(self.images[index].hash(), &[tag]).await,
+                    Err(e) => Err(e.into()),
+                };
+                match result {
                     Ok(_) => {
                         self.tag_input = None;
                         self.tag_error = None;
@@ -343,14 +342,10 @@ impl App for KuraApp {
                 }
             }
             Action::Untag { index, tag } => {
-                let hash = self.images[index].image.hash.as_str().to_string();
-                let result = sqlx::query!(
-                    "DELETE FROM tags WHERE image_hash = ? AND tag = ?",
-                    hash,
-                    tag
-                )
-                .execute(&self.state.db_pool)
-                .await;
+                let result = match Tag::parse(&tag) {
+                    Ok(tag) => self.lib.untag(self.images[index].hash(), &tag).await,
+                    Err(e) => Err(e.into()),
+                };
                 match result {
                     Ok(_) => {
                         self.untag_input = None;
@@ -374,7 +369,7 @@ impl App for KuraApp {
         let items: Vec<ListItem> = self
             .images
             .iter()
-            .map(|img| ListItem::new(img.image.name.clone()))
+            .map(|img| ListItem::new(img.name().to_string()))
             .collect();
 
         let list = List::new(items)
@@ -417,7 +412,7 @@ impl App for KuraApp {
 
         let is_animated = self
             .selected()
-            .and_then(|img| img.image.mime_type())
+            .and_then(|img| img.media_type())
             .map(|m| m.is_animated())
             .unwrap_or(false);
 
@@ -449,18 +444,18 @@ impl App for KuraApp {
         }
 
         let tags_text = if let Some(img) = self.selected() {
-            if img.tags.is_empty() {
+            if img.tags().is_empty() {
                 Line::from(Span::styled(
                     "no tags",
                     Style::default().fg(Color::DarkGray),
                 ))
             } else {
                 let spans: Vec<Span> = img
-                    .tags
+                    .tags()
                     .iter()
                     .flat_map(|t| {
                         [
-                            Span::styled(t.tag.as_str(), Style::default().fg(Color::Yellow)),
+                            Span::styled(t.as_str(), Style::default().fg(Color::Yellow)),
                             Span::raw("  "),
                         ]
                     })
