@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "hako", "kura-core", "kura-server"]
+members = [".", "hako", "hako/http", "kura-core", "kura-server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,12 +24,14 @@ futures = "0.3.32"
 hex = "0.4.3"
 image = "0.25.10"
 jiff = { version = "0.2.24", features = ["serde"] }
-miette = "7.6.0"
+miette = { version = "7.6.0", features = ["fancy"] }
+nucleo-matcher = "0.3.1"
 ratatui = "0.30.0"
 ratatui-image = { version = "11.0.2", features = ["tokio"] }
 reqwest = { version = "0.13.3", features = ["stream"] }
 sha2 = "0.11.0"
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "macros"] }
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["rt", "io"] }
@@ -58,5 +60,6 @@ kura-core = { workspace = true }
 kura-server = { workspace = true }
 image = { workspace = true }
 miette = { workspace = true }
+nucleo-matcher = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

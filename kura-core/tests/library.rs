@@ -412,7 +412,7 @@ async fn add_keeps_a_given_created_at() {
     assert_eq!(old.created_at(), at);
 
     // Newest first: the backdated image sorts after one added now.
-    lib.add(Source::bytes(png_bytes(2, false), None), name("new"), &[], None).await.unwrap();
+    let _ = lib.add(Source::bytes(png_bytes(2, false), None), name("new"), &[], None).await.unwrap();
     let names: Vec<_> = lib.list(&ImageFilter::all()).await.unwrap().iter().map(|i| i.name().to_string()).collect();
     assert_eq!(names, ["new", "old"]);
 

@@ -59,6 +59,8 @@ pub enum Commands {
     Rename { image: ImageRef, new_name: ImageName },
     /// Browse the library in the terminal
     Tui,
+    /// Fuzzy pick an image, copy it, and exit
+    Pick,
     /// Check that the database and the files on disk agree
     Doctor {
         /// Also remove what crashes left behind (orphan files, stale uploads, old thumbnails)

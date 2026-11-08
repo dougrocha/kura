@@ -1,0 +1,8 @@
+[package]
+name = "hako-http"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+strum = { workspace = true }
+thiserror = { workspace = true }

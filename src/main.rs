@@ -1,5 +1,6 @@
 mod cli;
 mod image_protocol_cache;
+mod search;
 mod tui;
 
 use clap::{CommandFactory, Parser};
@@ -8,7 +9,7 @@ use miette::{IntoDiagnostic, Result, miette};
 
 use crate::{
     cli::{Cli, Commands},
-    tui::KuraApp,
+    tui::{KuraApp, Mode},
 };
 
 #[tokio::main]
@@ -32,11 +33,13 @@ async fn main() -> Result<()> {
             if cli.clear_cache {
                 lib.clear_thumbnails().await.into_diagnostic()?;
             }
-            if let Commands::Tui = command {
-                let app = KuraApp::new(lib).await.into_diagnostic()?;
-                hako::run(app).await.into_diagnostic()?;
-            } else {
-                run(&lib, command).await.into_diagnostic()?;
+            match command {
+                Commands::Tui | Commands::Pick => {
+                    let mode = if let Commands::Pick = command { Mode::Pick } else { Mode::Browse };
+                    let app = KuraApp::new(lib, mode).await.into_diagnostic()?;
+                    hako::run(app).await.into_diagnostic()?;
+                }
+                command => run(&lib, command).await.into_diagnostic()?,
             }
         }
     }
@@ -110,7 +113,7 @@ async fn run(lib: &Library, command: Commands) -> kura_core::Result<()> {
             println!("Renamed to {}", edited.image.name());
         }
         Commands::Doctor { fix } => doctor(lib, fix).await?,
-        Commands::Tui | Commands::Nuke | Commands::Serve(_) => unreachable!("handled in main"),
+        Commands::Tui | Commands::Pick | Commands::Nuke | Commands::Serve(_) => unreachable!("handled in main"),
     }
     Ok(())
 }
