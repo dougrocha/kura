@@ -3,8 +3,8 @@ use std::time::Duration;
 use crossterm::{
     cursor,
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent,
+        KeyEvent, KeyEventKind, MouseEvent,
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -45,12 +45,7 @@ pub struct TerminalConfig {
 
 impl Default for TerminalConfig {
     fn default() -> Self {
-        Self {
-            frame_rate: 60.0,
-            tick_interval: Duration::from_millis(250),
-            mouse: false,
-            paste: false,
-        }
+        Self { frame_rate: 60.0, tick_interval: Duration::from_millis(250), mouse: false, paste: false }
     }
 }
 

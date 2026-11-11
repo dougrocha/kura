@@ -154,10 +154,7 @@ impl std::error::Error for Internal {
     }
 }
 
-pub(crate) fn internal(
-    context: &'static str,
-    source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
-) -> Error {
+pub(crate) fn internal(context: &'static str, source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
     Error::Internal(Internal { context, source: source.into() })
 }
 

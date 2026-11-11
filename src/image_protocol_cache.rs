@@ -18,10 +18,7 @@ impl Default for ImageProtocolCache {
 
 impl ImageProtocolCache {
     pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            order: Vec::new(),
-        }
+        Self { map: HashMap::new(), order: Vec::new() }
     }
 
     pub fn insert(&mut self, hash: String, protocol: StatefulProtocol) {

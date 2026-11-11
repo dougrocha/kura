@@ -31,10 +31,8 @@ impl ImageHash {
     /// Hash a local file by streaming it (`kura remove --file`).
     pub async fn of_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let read_error = |e: std::io::Error| Error::ReadSource {
-            what: format!("'{}'", path.display()),
-            reason: e.to_string(),
-        };
+        let read_error =
+            |e: std::io::Error| Error::ReadSource { what: format!("'{}'", path.display()), reason: e.to_string() };
         let mut file = tokio::fs::File::open(path).await.map_err(read_error)?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0; 64 * 1024];
@@ -170,10 +168,7 @@ impl Tag {
 
     /// Parse a comma-separated list, skipping empty entries ("a, b,," → [a, b]).
     pub fn parse_list(s: &str) -> Result<Vec<Self>, InvalidInput> {
-        s.split(',')
-            .filter(|t| !t.trim().is_empty())
-            .map(Self::parse)
-            .collect()
+        s.split(',').filter(|t| !t.trim().is_empty()).map(Self::parse).collect()
     }
 
     pub fn as_str(&self) -> &str {

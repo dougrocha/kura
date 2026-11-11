@@ -1,4 +1,4 @@
-use std::{io::Write, path::Path, process::{Command, Stdio}};
+use std::path::Path;
 
 use crate::mime_type::MimeTypeError;
 
@@ -10,41 +10,46 @@ pub trait Clipboard {
 pub fn clipboard() -> Result<Box<dyn Clipboard>, ClipboardError> {
     #[cfg(target_os = "linux")]
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        return Ok(Box::new(WaylandClipboard));
+        return Ok(Box::new(wayland::WaylandClipboard));
     }
 
     Err(ClipboardError::UnsupportedPlatform)
 }
 
-struct WaylandClipboard;
+#[cfg(target_os = "linux")]
+mod wayland {
+    use std::{
+        io::Write,
+        path::Path,
+        process::{Command, Stdio},
+    };
 
-impl Clipboard for WaylandClipboard {
-    fn write(&self, text: &str) -> Result<(), ClipboardError> {
-        let mut child = Command::new("wl-copy")
-            .stdin(Stdio::piped())
-            .spawn()?;
+    use super::{Clipboard, ClipboardError};
 
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
+    pub(super) struct WaylandClipboard;
+
+    impl Clipboard for WaylandClipboard {
+        fn write(&self, text: &str) -> Result<(), ClipboardError> {
+            let mut child = Command::new("wl-copy").stdin(Stdio::piped()).spawn()?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
+
+            Ok(())
         }
 
-        Ok(())
-    }
+        fn write_image(&self, path: &Path) -> Result<(), ClipboardError> {
+            let uri = format!("file://{}\n", path.display());
 
-    fn write_image(&self, path: &Path) -> Result<(), ClipboardError> {
-        let uri = format!("file://{}\n", path.display());
+            let mut child = Command::new("wl-copy").arg("--type").arg("text/uri-list").stdin(Stdio::piped()).spawn()?;
 
-        let mut child = Command::new("wl-copy")
-            .arg("--type")
-            .arg("text/uri-list")
-            .stdin(Stdio::piped())
-            .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(uri.as_bytes())?;
+            }
 
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(uri.as_bytes())?;
+            Ok(())
         }
-
-        Ok(())
     }
 }
 

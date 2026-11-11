@@ -30,11 +30,7 @@ impl TextInput {
             KeyCode::Enter => TextInputEvent::Submitted(self.value.clone()),
             KeyCode::Backspace => {
                 if self.cursor > 0 {
-                    let prev = self.value[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
+                    let prev = self.value[..self.cursor].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
                     self.value.remove(prev);
                     self.cursor = prev;
                 }
@@ -48,11 +44,7 @@ impl TextInput {
             }
             KeyCode::Left => {
                 if self.cursor > 0 {
-                    self.cursor = self.value[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
+                    self.cursor = self.value[..self.cursor].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
                 }
                 TextInputEvent::Changed
             }

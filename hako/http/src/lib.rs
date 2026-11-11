@@ -42,21 +42,14 @@ impl TryFrom<&[u8]> for Request {
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         // head ends at the first CRLF CRLF, the rest is body
-        let head_end = bytes
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or(ParseRequestError::MissingCrlf)?;
-        let head = std::str::from_utf8(&bytes[..head_end])
-            .map_err(|_| ParseRequestError::InvalidEncoding)?;
+        let head_end = bytes.windows(4).position(|w| w == b"\r\n\r\n").ok_or(ParseRequestError::MissingCrlf)?;
+        let head = std::str::from_utf8(&bytes[..head_end]).map_err(|_| ParseRequestError::InvalidEncoding)?;
         let body_bytes = &bytes[head_end + 4..];
 
         let mut lines = head.split("\r\n");
 
         // parse first request line
-        let request_line = lines
-            .next()
-            .filter(|l| !l.is_empty())
-            .ok_or(ParseRequestError::MissingRequestLine)?;
+        let request_line = lines.next().filter(|l| !l.is_empty()).ok_or(ParseRequestError::MissingRequestLine)?;
         let mut parts = request_line.split(' ');
 
         let method = Method::from_str(parts.next().ok_or(ParseRequestError::UnexpectedEof)?)
@@ -65,21 +58,11 @@ impl TryFrom<&[u8]> for Request {
         let path = parts
             .next()
             .ok_or(ParseRequestError::UnexpectedEof)
-            .and_then(|p| {
-                if p.starts_with('/') {
-                    Ok(p.to_string())
-                } else {
-                    Err(ParseRequestError::InvalidUri)
-                }
-            })?;
+            .and_then(|p| if p.starts_with('/') { Ok(p.to_string()) } else { Err(ParseRequestError::InvalidUri) })?;
 
         let version_part = parts.next().ok_or(ParseRequestError::UnexpectedEof)?;
-        let version_str = version_part
-            .strip_prefix("HTTP/")
-            .ok_or(ParseRequestError::InvalidVersion)?;
-        let http_version = version_str
-            .parse::<HttpVersion>()
-            .map_err(|_| ParseRequestError::InvalidVersion)?;
+        let version_str = version_part.strip_prefix("HTTP/").ok_or(ParseRequestError::InvalidVersion)?;
+        let http_version = version_str.parse::<HttpVersion>().map_err(|_| ParseRequestError::InvalidVersion)?;
 
         if parts.next().is_some() {
             return Err(ParseRequestError::InvalidRequestLine);
@@ -88,15 +71,13 @@ impl TryFrom<&[u8]> for Request {
         // parse headers, repeated names are combined with ", "
         let mut headers: HashMap<String, String> = HashMap::new();
         for line in lines {
-            let (name, value) = line.split_once(':').ok_or_else(|| {
-                ParseRequestError::InvalidHeader("missing ':' in header".to_string())
-            })?;
+            let (name, value) = line
+                .split_once(':')
+                .ok_or_else(|| ParseRequestError::InvalidHeader("missing ':' in header".to_string()))?;
 
             let name = name.trim().to_lowercase();
             if name.is_empty() {
-                return Err(ParseRequestError::InvalidHeader(
-                    "empty header name".to_string(),
-                ));
+                return Err(ParseRequestError::InvalidHeader("empty header name".to_string()));
             }
             let value = value.trim();
 
@@ -112,9 +93,8 @@ impl TryFrom<&[u8]> for Request {
         // body is exactly content-length bytes, extra bytes are ignored
         let body = match headers.get("content-length") {
             Some(len) => {
-                let expected: usize = len.parse().map_err(|_| {
-                    ParseRequestError::InvalidHeader("invalid content-length".to_string())
-                })?;
+                let expected: usize =
+                    len.parse().map_err(|_| ParseRequestError::InvalidHeader("invalid content-length".to_string()))?;
                 if body_bytes.len() < expected {
                     return Err(ParseRequestError::IncompleteBody);
                 }
@@ -123,14 +103,7 @@ impl TryFrom<&[u8]> for Request {
             None => Vec::new(),
         };
 
-        Ok(Self {
-            method,
-            path,
-            http_version,
-
-            headers,
-            body,
-        })
+        Ok(Self { method, path, http_version, headers, body })
     }
 }
 
@@ -174,6 +147,8 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
+// Router sketch: signatures to implement. Drop this allow once they are filled in.
+#[allow(unused_variables, unused_mut)]
 impl Response {
     pub fn new(status: u16) -> Self {
         todo!()
@@ -193,6 +168,7 @@ impl Response {
     }
 }
 
+#[allow(unused_variables, unused_mut)]
 impl From<RouterError> for Response {
     fn from(err: RouterError) -> Self {
         todo!()
@@ -202,9 +178,11 @@ impl From<RouterError> for Response {
 pub struct Route {
     pub method: Method,
     pub path: String,
+    #[allow(dead_code)] // read by `call`, still a sketch
     handler: Handler,
 }
 
+#[allow(unused_variables, unused_mut)]
 impl Route {
     pub fn new(
         method: Method,
@@ -225,9 +203,11 @@ impl Route {
 
 #[derive(Default)]
 pub struct Router {
+    #[allow(dead_code)] // read by `handle`, still a sketch
     routes: Vec<Route>,
 }
 
+#[allow(unused_variables, unused_mut)]
 impl Router {
     pub fn new() -> Self {
         todo!()
@@ -294,10 +274,7 @@ mod tests {
 
     #[test]
     fn parses_get_with_headers() {
-        let req = Request::try_from(
-            &b"GET /users HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n"[..],
-        )
-        .unwrap();
+        let req = Request::try_from(&b"GET /users HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n"[..]).unwrap();
         assert_eq!(req.method, Method::Get);
         assert_eq!(req.path, "/users");
         assert_eq!(req.http_version, HttpVersion::Http1_1);
@@ -308,9 +285,7 @@ mod tests {
 
     #[test]
     fn parses_post_with_content_length_body() {
-        let req = "POST /items HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"
-            .parse::<Request>()
-            .unwrap();
+        let req = "POST /items HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello".parse::<Request>().unwrap();
         assert_eq!(req.method, Method::Post);
         assert_eq!(req.body, b"hello");
     }
@@ -324,10 +299,7 @@ mod tests {
 
     #[test]
     fn bare_lf_is_missing_crlf() {
-        assert!(matches!(
-            Request::try_from(&b"GET / HTTP/1.1\nHost: x\n\n"[..]),
-            Err(ParseRequestError::MissingCrlf)
-        ));
+        assert!(matches!(Request::try_from(&b"GET / HTTP/1.1\nHost: x\n\n"[..]), Err(ParseRequestError::MissingCrlf)));
     }
 
     #[test]
@@ -340,34 +312,22 @@ mod tests {
 
     #[test]
     fn empty_request_line_is_missing() {
-        assert!(matches!(
-            "\r\n\r\n".parse::<Request>(),
-            Err(ParseRequestError::MissingRequestLine)
-        ));
+        assert!(matches!("\r\n\r\n".parse::<Request>(), Err(ParseRequestError::MissingRequestLine)));
     }
 
     #[test]
     fn invalid_method() {
-        assert!(matches!(
-            "FOO / HTTP/1.1\r\n\r\n".parse::<Request>(),
-            Err(ParseRequestError::InvalidMethod)
-        ));
+        assert!(matches!("FOO / HTTP/1.1\r\n\r\n".parse::<Request>(), Err(ParseRequestError::InvalidMethod)));
     }
 
     #[test]
     fn path_must_start_with_slash() {
-        assert!(matches!(
-            "GET index HTTP/1.1\r\n\r\n".parse::<Request>(),
-            Err(ParseRequestError::InvalidUri)
-        ));
+        assert!(matches!("GET index HTTP/1.1\r\n\r\n".parse::<Request>(), Err(ParseRequestError::InvalidUri)));
     }
 
     #[test]
     fn bad_version() {
-        assert!(matches!(
-            "GET / HTTP/2.0\r\n\r\n".parse::<Request>(),
-            Err(ParseRequestError::InvalidVersion)
-        ));
+        assert!(matches!("GET / HTTP/2.0\r\n\r\n".parse::<Request>(), Err(ParseRequestError::InvalidVersion)));
     }
 
     #[test]
@@ -380,17 +340,13 @@ mod tests {
 
     #[test]
     fn extra_bytes_beyond_content_length_are_ignored() {
-        let req = "POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET / HTTP/1.1\r\n\r\n"
-            .parse::<Request>()
-            .unwrap();
+        let req = "POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET / HTTP/1.1\r\n\r\n".parse::<Request>().unwrap();
         assert_eq!(req.body, b"abc");
     }
 
     #[test]
     fn duplicate_headers_are_combined() {
-        let req = "GET / HTTP/1.1\r\nAccept: a\r\naccept: b\r\n\r\n"
-            .parse::<Request>()
-            .unwrap();
+        let req = "GET / HTTP/1.1\r\nAccept: a\r\naccept: b\r\n\r\n".parse::<Request>().unwrap();
         assert_eq!(req.headers["accept"], "a, b");
     }
 

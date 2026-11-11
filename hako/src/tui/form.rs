@@ -1,10 +1,10 @@
+use crate::form_field::FormFieldEvent;
+use crate::style::{Color, Style};
+use crate::widgets::{Block, Borders, Line, Paragraph, Span};
+use crate::{FormField, Frame};
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::widgets::Clear;
-use crate::{Frame, FormField};
-use crate::form_field::FormFieldEvent;
-use crate::widgets::{Block, Borders, Line, Paragraph, Span};
-use crate::style::{Color, Style};
 
 pub enum FormEvent {
     /// Form submitted with all field values
@@ -24,12 +24,7 @@ pub struct Form {
 
 impl Form {
     pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            fields: Vec::new(),
-            focused_field: 0,
-            form_error: None,
-        }
+        Self { title: title.into(), fields: Vec::new(), focused_field: 0, form_error: None }
     }
 
     pub fn add_field(mut self, field: FormField) -> Self {
@@ -85,20 +80,14 @@ impl Form {
                 None
             }
             FormFieldEvent::Previous => {
-                self.focused_field = if self.focused_field == 0 {
-                    self.fields.len() - 1
-                } else {
-                    self.focused_field - 1
-                };
+                self.focused_field =
+                    if self.focused_field == 0 { self.fields.len() - 1 } else { self.focused_field - 1 };
                 None
             }
             FormFieldEvent::Blurred(val) => {
                 let index = self.focused_field;
                 self.focused_field = (self.focused_field + 1) % self.fields.len();
-                Some(FormEvent::FieldBlurred {
-                    field_index: index,
-                    value: val,
-                })
+                Some(FormEvent::FieldBlurred { field_index: index, value: val })
             }
             FormFieldEvent::Changed => None,
         }
@@ -122,16 +111,8 @@ impl Form {
 
         // Render form-level error if present
         if let Some(error) = &self.form_error {
-            let error_line = Line::from(Span::styled(
-                format!("Error: {}", error),
-                Style::default().fg(Color::Red),
-            ));
-            let error_area = Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            };
+            let error_line = Line::from(Span::styled(format!("Error: {}", error), Style::default().fg(Color::Red)));
+            let error_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
             frame.render_widget(Paragraph::new(error_line), error_area);
             y += 2;
         }
@@ -155,12 +136,7 @@ impl Form {
             } else {
                 Line::from(Span::styled(label_base, Style::default().fg(Color::White)))
             };
-            let label_area = Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            };
+            let label_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
             frame.render_widget(Paragraph::new(label_line), label_area);
             y += 1;
 
@@ -185,31 +161,15 @@ impl Form {
                 Color::White
             };
 
-            let input_line = Line::from(Span::styled(
-                input_text,
-                Style::default().fg(input_color)
-            ));
-            let input_area = Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            };
+            let input_line = Line::from(Span::styled(input_text, Style::default().fg(input_color)));
+            let input_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
             frame.render_widget(Paragraph::new(input_line), input_area);
             y += 1;
 
             // Error line if present
             if let Some(error) = field.error() {
-                let error_line = Line::from(Span::styled(
-                    format!("  {}", error),
-                    Style::default().fg(Color::Red),
-                ));
-                let error_area = Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                };
+                let error_line = Line::from(Span::styled(format!("  {}", error), Style::default().fg(Color::Red)));
+                let error_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
                 frame.render_widget(Paragraph::new(error_line), error_area);
                 y += 1;
             }
@@ -222,12 +182,7 @@ impl Form {
                 "Tab/Shift+Tab: navigate  |  Enter: submit  |  Esc: cancel",
                 Style::default().fg(Color::DarkGray),
             ));
-            let help_area = Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            };
+            let help_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
             frame.render_widget(Paragraph::new(help_line), help_area);
         }
     }

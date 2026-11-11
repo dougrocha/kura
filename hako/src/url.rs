@@ -1,4 +1,4 @@
-/// Utilities for detecting and validating URLs vs file paths.
+//! Utilities for detecting and validating URLs vs file paths.
 
 /// Check if a string is a URL (starts with http:// or https://).
 pub fn is_url(input: &str) -> bool {

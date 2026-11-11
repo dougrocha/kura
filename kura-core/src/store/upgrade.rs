@@ -44,12 +44,11 @@ pub(crate) async fn run(store: &Store, layout: &Layout) -> Result<()> {
 /// Re-running after a crash finds files already at `<hash>.*` and plans the same rows.
 async fn legacy_pre_0002(pool: &SqlitePool, layout: &Layout) -> Result<()> {
     // Unchecked queries: the compile-time schema no longer has `file_path`.
-    let has_legacy_column: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('images') WHERE name = 'file_path'",
-    )
-    .fetch_one(pool)
-    .await
-    .internal("inspecting schema")?;
+    let has_legacy_column: bool =
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('images') WHERE name = 'file_path'")
+            .fetch_one(pool)
+            .await
+            .internal("inspecting schema")?;
     if !has_legacy_column {
         return Ok(());
     }

@@ -33,11 +33,7 @@ impl ScrollList {
             return;
         }
         let i = self.state.selected().unwrap_or(0);
-        let prev = if i == 0 {
-            if self.wrap { self.len - 1 } else { 0 }
-        } else {
-            i - 1
-        };
+        let prev = if i == 0 { if self.wrap { self.len - 1 } else { 0 } } else { i - 1 };
         self.state.select(Some(prev));
     }
 
@@ -46,11 +42,7 @@ impl ScrollList {
             return;
         }
         let i = self.state.selected().unwrap_or(0);
-        let next = if i + 1 >= self.len {
-            if self.wrap { 0 } else { self.len - 1 }
-        } else {
-            i + 1
-        };
+        let next = if i + 1 >= self.len { if self.wrap { 0 } else { self.len - 1 } } else { i + 1 };
         self.state.select(Some(next));
     }
 

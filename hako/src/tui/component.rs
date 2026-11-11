@@ -23,11 +23,7 @@ pub enum EventPropagation<S> {
 }
 
 pub trait Component<S> {
-    fn handle_events(
-        &mut self,
-        _event: &Event,
-        _context: &mut Context<S>,
-    ) -> EventPropagation<S> {
+    fn handle_events(&mut self, _event: &Event, _context: &mut Context<S>) -> EventPropagation<S> {
         EventPropagation::Ignore(None)
     }
 
@@ -45,10 +41,7 @@ pub struct Components<S> {
 
 impl<S> Components<S> {
     pub fn new(area: Rect) -> Self {
-        Self {
-            components: vec![],
-            area,
-        }
+        Self { components: vec![], area }
     }
 
     pub fn area(&self) -> Rect {

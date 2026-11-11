@@ -124,16 +124,11 @@ impl KuraApp {
             self.spawn_image_load(selected);
         }
 
-        let neighbors: Vec<usize> = [
-            position.wrapping_sub(2),
-            position.wrapping_sub(1),
-            position + 1,
-            position + 2,
-        ]
-        .into_iter()
-        .filter_map(|p| self.visible.get(p).copied())
-        .filter(|&i| !self.protocol_cache.contains(self.images[i].hash().as_str()))
-        .collect();
+        let neighbors: Vec<usize> = [position.wrapping_sub(2), position.wrapping_sub(1), position + 1, position + 2]
+            .into_iter()
+            .filter_map(|p| self.visible.get(p).copied())
+            .filter(|&i| !self.protocol_cache.contains(self.images[i].hash().as_str()))
+            .collect();
 
         for index in neighbors {
             self.spawn_image_load(index);
@@ -246,11 +241,8 @@ impl KuraApp {
     fn open_selected(&self) {
         let Some(img) = self.selected() else { return };
         let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        let _ = std::process::Command::new(opener)
-            .arg(self.lib.path_of(img))
-            .spawn();
+        let _ = std::process::Command::new(opener).arg(self.lib.path_of(img)).spawn();
     }
-
 }
 
 impl App for KuraApp {
@@ -285,10 +277,7 @@ impl App for KuraApp {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) => {
                             if let Some(index) = self.selected_index() {
-                                return Some(Action::Rename {
-                                    index,
-                                    new_name: val,
-                                });
+                                return Some(Action::Rename { index, new_name: val });
                             }
                         }
                         TextInputEvent::Cancelled => {
@@ -448,18 +437,17 @@ impl App for KuraApp {
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
-        let active_input: Option<(&TextInput, Option<&str>, &str)> =
-            if let Some(input) = &self.search_input {
-                Some((input, None, "Search  name, tags, #tag"))
-            } else if let Some(input) = &self.rename_input {
-                Some((input, self.rename_error.as_deref(), "Rename"))
-            } else if let Some(input) = &self.tag_input {
-                Some((input, self.tag_error.as_deref(), "Add tag"))
-            } else if let Some(input) = &self.untag_input {
-                Some((input, self.tag_error.as_deref(), "Remove tag"))
-            } else {
-                None
-            };
+        let active_input: Option<(&TextInput, Option<&str>, &str)> = if let Some(input) = &self.search_input {
+            Some((input, None, "Search  name, tags, #tag"))
+        } else if let Some(input) = &self.rename_input {
+            Some((input, self.rename_error.as_deref(), "Rename"))
+        } else if let Some(input) = &self.tag_input {
+            Some((input, self.tag_error.as_deref(), "Add tag"))
+        } else if let Some(input) = &self.untag_input {
+            Some((input, self.tag_error.as_deref(), "Remove tag"))
+        } else {
+            None
+        };
 
         if let Some((input, error, title)) = active_input {
             let left_chunks = Layout::default()
@@ -483,17 +471,9 @@ impl App for KuraApp {
             frame.render_stateful_widget(list, chunks[0], self.scroll_list.state());
         }
 
-        let is_animated = self
-            .selected()
-            .and_then(|img| img.media_type())
-            .map(|m| m.is_animated())
-            .unwrap_or(false);
+        let is_animated = self.selected().and_then(|img| img.media_type()).map(|m| m.is_animated()).unwrap_or(false);
 
-        let preview_title = if is_animated {
-            "Preview  [animated — press o to open]"
-        } else {
-            "Preview"
-        };
+        let preview_title = if is_animated { "Preview  [animated — press o to open]" } else { "Preview" };
 
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -520,20 +500,12 @@ impl App for KuraApp {
 
         let tags_text = if let Some(img) = self.selected() {
             if img.tags().is_empty() {
-                Line::from(Span::styled(
-                    "no tags",
-                    Style::default().fg(Color::DarkGray),
-                ))
+                Line::from(Span::styled("no tags", Style::default().fg(Color::DarkGray)))
             } else {
                 let spans: Vec<Span> = img
                     .tags()
                     .iter()
-                    .flat_map(|t| {
-                        [
-                            Span::styled(t.as_str(), Style::default().fg(Color::Yellow)),
-                            Span::raw("  "),
-                        ]
-                    })
+                    .flat_map(|t| [Span::styled(t.as_str(), Style::default().fg(Color::Yellow)), Span::raw("  ")])
                     .collect();
                 Line::from(spans)
             }
@@ -541,12 +513,10 @@ impl App for KuraApp {
             Line::from("")
         };
 
-        let tags_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Tags  [Enter] copy  [o] open  [t] add  [u] remove");
+        let tags_block =
+            Block::default().borders(Borders::ALL).title("Tags  [Enter] copy  [o] open  [t] add  [u] remove");
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);
-
     }
 }

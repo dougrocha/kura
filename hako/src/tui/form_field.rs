@@ -16,11 +16,14 @@ pub enum FormFieldEvent {
     Changed,
 }
 
+/// Checks a field's value; `Err` holds the message shown under the field.
+type Validator = Box<dyn Fn(&str) -> Result<(), String>>;
+
 pub struct FormField {
     label: String,
     hint: Option<String>,
     input: TextInput,
-    validator: Option<Box<dyn Fn(&str) -> Result<(), String>>>,
+    validator: Option<Validator>,
     error: Option<String>,
     placeholder: String,
     required: bool,

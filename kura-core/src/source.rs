@@ -37,10 +37,7 @@ pub(crate) enum Origin {
 impl Origin {
     pub(crate) fn read_error(&self, err: io::Error) -> Error {
         match self {
-            Self::File(path) => Error::ReadSource {
-                what: format!("'{}'", path.display()),
-                reason: err.to_string(),
-            },
+            Self::File(path) => Error::ReadSource { what: format!("'{}'", path.display()), reason: err.to_string() },
             Self::Url(url) => Error::Fetch { url: url.clone(), reason: FetchFailure::Network(err.to_string()) },
             Self::Upload => Error::ReadSource { what: "the upload".into(), reason: err.to_string() },
         }
@@ -54,11 +51,7 @@ impl Source {
         let path = path.as_ref().to_path_buf();
         let origin = Origin::File(path.clone());
         let file = tokio::fs::File::open(&path).await.map_err(|e| origin.read_error(e))?;
-        Ok(Self {
-            reader: Box::pin(file),
-            hint: path.file_name().map(|n| n.to_string_lossy().into_owned()),
-            origin,
-        })
+        Ok(Self { reader: Box::pin(file), hint: path.file_name().map(|n| n.to_string_lossy().into_owned()), origin })
     }
 
     /// An HTTP(S) URL fetched under `policy`. Returns once the response headers
@@ -173,9 +166,7 @@ async fn ensure_public(url: &Url) -> std::result::Result<(), FetchFailure> {
     let host = url.host_str().ok_or(FetchFailure::Forbidden)?;
     let port = url.port_or_known_default().unwrap_or(80);
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| FetchFailure::Network(e.to_string()))?;
+    let addrs = tokio::net::lookup_host((host, port)).await.map_err(|e| FetchFailure::Network(e.to_string()))?;
 
     let mut any = false;
     for addr in addrs {
@@ -218,7 +209,16 @@ mod tests {
 
     #[test]
     fn private_addresses_are_not_public() {
-        for ip in ["127.0.0.1", "10.1.2.3", "192.168.1.1", "100.101.102.103", "169.254.1.1", "::1", "fd7a:115c:a1e0::1", "::ffff:127.0.0.1"] {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.1.1",
+            "100.101.102.103",
+            "169.254.1.1",
+            "::1",
+            "fd7a:115c:a1e0::1",
+            "::ffff:127.0.0.1",
+        ] {
             assert!(!is_public(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["1.1.1.1", "2606:4700:4700::1111"] {

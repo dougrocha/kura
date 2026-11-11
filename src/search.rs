@@ -35,17 +35,9 @@ impl Query {
         self.tags.is_empty() && self.pattern.atoms.is_empty()
     }
 
-    fn score(
-        &self,
-        name: &str,
-        tags: &[&str],
-        matcher: &mut Matcher,
-        buf: &mut Vec<char>,
-    ) -> Option<u32> {
-        let has_tags = self.tags.iter().all(|wanted| {
-            tags.iter()
-                .any(|tag| tag.to_lowercase().starts_with(wanted.as_str()))
-        });
+    fn score(&self, name: &str, tags: &[&str], matcher: &mut Matcher, buf: &mut Vec<char>) -> Option<u32> {
+        let has_tags =
+            self.tags.iter().all(|wanted| tags.iter().any(|tag| tag.to_lowercase().starts_with(wanted.as_str())));
         if !has_tags {
             return None;
         }
@@ -54,10 +46,7 @@ impl Query {
             return Some(0);
         }
 
-        let haystack = std::iter::once(name)
-            .chain(tags.iter().copied())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let haystack = std::iter::once(name).chain(tags.iter().copied()).collect::<Vec<_>>().join(" ");
         self.pattern.score(Utf32Str::new(&haystack, buf), matcher)
     }
 }
@@ -76,9 +65,7 @@ pub fn filter(images: &[Image], query: &str, matcher: &mut Matcher) -> Vec<usize
         .enumerate()
         .filter_map(|(i, img)| {
             let tags: Vec<&str> = img.tags().iter().map(|t| t.as_str()).collect();
-            query
-                .score(img.name().as_str(), &tags, matcher, &mut buf)
-                .map(|score| (i, score))
+            query.score(img.name().as_str(), &tags, matcher, &mut buf).map(|score| (i, score))
         })
         .collect();
 
@@ -95,9 +82,7 @@ mod tests {
 
     fn matches(query: &str, name: &str, tags: &[&str]) -> bool {
         let mut matcher = Matcher::new(Config::DEFAULT);
-        Query::parse(query)
-            .score(name, tags, &mut matcher, &mut vec![])
-            .is_some()
+        Query::parse(query).score(name, tags, &mut matcher, &mut vec![]).is_some()
     }
 
     #[test]
