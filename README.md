@@ -52,9 +52,12 @@ preview cache is always safe to delete.
 - To regenerate the sqlx query cache: `sqlx-cli`, pinned in `mise.toml`
   (`mise install`)
 
-On Linux, copying to the clipboard needs Wayland and `wl-copy`, and opening an
-image uses `xdg-open`. Image previews need a terminal that can draw images,
-such as kitty, Ghostty, WezTerm, or one with sixel support.
+Copying an image puts it on the clipboard as a file, so it pastes into chat
+apps as an attachment (GIFs stay animated). On macOS it's also copied as a
+picture, for apps like Notes and Preview; this uses the built-in `osascript`.
+On Linux it needs Wayland and `wl-copy`, and opening an image uses `xdg-open`.
+Image previews need a terminal that can draw images, such as kitty, Ghostty,
+WezTerm, or one with sixel support.
 
 ## Running it
 
@@ -182,7 +185,7 @@ the `tui` feature, so `kura-core` and `kura-server` use only the plain utilities
   separate render timer, so the tick rate and frame rate are set independently.
 - **Widgets.** Text input, scroll list, and form fields with errors.
 - **Utilities.** Image type detection from file bytes, terminal image
-  rendering, and a clipboard interface.
+  rendering, and a clipboard (macOS and Wayland).
 
 ## Development
 
