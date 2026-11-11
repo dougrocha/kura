@@ -17,14 +17,19 @@ final class LibraryModel {
     var selection: KuraImage.ID?
     /// The sidebar's search, with the TUI's rules (see `SearchQuery`).
     var searchText = "" {
-        didSet { selectBestMatch() }
+        didSet { refreshVisible() }
     }
+    /// The images the sidebar shows: all of them, or the search's matches, best first.
+    private(set) var visibleImages: [KuraImage] = []
     /// Bumped by Find (⌘F) and `/`; the view focuses the search field.
     private(set) var searchRequests = 0
     /// Shown briefly after copying ("Copied cat jam").
     private(set) var notice: String?
 
     @ObservationIgnored private let server = ServerProcess()
+    /// Bumped by every copy, so a slow download can't overwrite a newer copy.
+    @ObservationIgnored private var copyGeneration = 0
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
 
     init() {
         server.onUnexpectedExit = { [weak self] message in
@@ -38,16 +43,18 @@ final class LibraryModel {
         visibleImages.first { $0.id == selection }
     }
 
-    /// The images the sidebar shows: all of them, or the search's matches, best first.
-    var visibleImages: [KuraImage] {
-        SearchQuery(searchText).filter(images)
+    /// The visible image among `ids` (what a context menu or double-click acts on).
+    func image(in ids: Set<KuraImage.ID>) -> KuraImage? {
+        visibleImages.first { ids.contains($0.id) }
     }
 
-    /// Keep the selection if it still matches, else jump to the best match, like the TUI.
-    private func selectBestMatch() {
-        let visible = visibleImages
-        if !visible.contains(where: { $0.id == selection }) {
-            selection = visible.first?.id
+    /// Re-filter, then keep the selection if it still matches, else select the
+    /// best match. (The TUI always jumps to the best match; keeping a still
+    /// visible selection is less jumpy with the mouse.)
+    private func refreshVisible() {
+        visibleImages = SearchQuery(searchText).filter(images)
+        if !visibleImages.contains(where: { $0.id == selection }) {
+            selection = visibleImages.first?.id
         }
     }
 
@@ -55,32 +62,40 @@ final class LibraryModel {
         searchRequests += 1
     }
 
-    /// Copy the selected image to the clipboard. Returns whether it worked.
+    /// Copy an image (default: the selected one) to the clipboard. Returns
+    /// whether it worked. `restoring` puts the clipboard back if it fails.
     @discardableResult
-    func copySelected() async -> Bool {
-        guard let client, let image = selected else { return false }
+    func copy(_ image: KuraImage? = nil, restoring snapshot: Pasteboard.Snapshot? = nil) async -> Bool {
+        guard let client, let image = image ?? selected else { return false }
+        copyGeneration += 1
+        let generation = copyGeneration
         do {
-            try await Pasteboard.copy(image, from: client)
+            let data = try await client.file(image)
+            // A newer copy started while this one downloaded: it wins.
+            guard generation == copyGeneration else { return false }
+            try Pasteboard.write(data, of: image)
             show("Copied \(image.name)")
             return true
         } catch {
-            show("Couldn't copy: \(error.localizedDescription)")
+            if let snapshot { Pasteboard.restore(snapshot) }
+            if generation == copyGeneration { show("Couldn't copy: \(error.localizedDescription)") }
             return false
         }
     }
 
     /// Like `kura pick`: copy, then get out of the way so you can paste.
-    func pickSelected() async {
-        if await copySelected() {
+    func pick(_ image: KuraImage? = nil) async {
+        if await copy(image) {
             NSApp.hide(nil)
         }
     }
 
     private func show(_ message: String) {
         notice = message
-        Task {
+        noticeTask?.cancel()
+        noticeTask = Task {
             try? await Task.sleep(for: .seconds(2))
-            if notice == message { notice = nil }
+            if !Task.isCancelled { notice = nil }
         }
     }
 
@@ -124,7 +139,7 @@ final class LibraryModel {
         do {
             images = try await client.images()
             error = nil
-            selectBestMatch()
+            refreshVisible()
         } catch {
             self.error = error.localizedDescription
         }

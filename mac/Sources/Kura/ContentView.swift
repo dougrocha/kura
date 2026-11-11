@@ -14,15 +14,19 @@ struct ContentView: View {
                 ImageRow(image: image)
             }
             // Return or double-click: copy and hide, like `kura pick`.
-            .contextMenu(forSelectionType: KuraImage.ID.self) { _ in
-                Button("Copy") { Task { await library.copySelected() } }
-            } primaryAction: { _ in
-                Task { await library.pickSelected() }
+            // Act on the rows SwiftUI passes: a right-clicked row needn't be selected.
+            .contextMenu(forSelectionType: KuraImage.ID.self) { ids in
+                Button("Copy") { Task { await library.copy(library.image(in: ids)) } }
+            } primaryAction: { ids in
+                Task { await library.pick(library.image(in: ids)) }
             }
             // ⌘C while the list has focus; the search field keeps its own ⌘C.
-            // The copy fetches the file, so it can't hand back providers synchronously.
+            // The copy downloads the file, so it can't hand SwiftUI providers
+            // synchronously. SwiftUI may clear the clipboard for the empty
+            // answer, so a failed copy restores what was there.
             .onCopyCommand {
-                Task { await library.copySelected() }
+                let snapshot = Pasteboard.snapshot()
+                Task { await library.copy(restoring: snapshot) }
                 return []
             }
             .overlay {
@@ -37,6 +41,8 @@ struct ContentView: View {
             }
             .searchable(text: $library.searchText, placement: .sidebar, prompt: "Name, tags, #tag")
             .searchFocused($searchFocused)
+            // Return in the search field picks the best match, like `kura pick`.
+            .onSubmit(of: .search) { Task { await library.pick() } }
             .onChange(of: library.searchRequests) { searchFocused = true }
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
@@ -69,7 +75,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    Task { await library.copySelected() }
+                    Task { await library.copy() }
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }

@@ -46,7 +46,8 @@ struct KuraClient: Sendable {
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
-        try Self.decoder.decode(T.self, from: try await data(path))
+        let data = try await data(path)
+        return try Self.decoder.decode(T.self, from: data)
     }
 
     private func data(_ path: String) async throws -> Data {

@@ -112,6 +112,40 @@ mod tests {
         assert!(!matches("#reac #mus", "cat vibing", &["reaction"]));
     }
 
+    // nucleo behavior the Mac app's search (mac/Sources/Kura/Search.swift) mirrors.
+
+    #[test]
+    fn smart_case() {
+        assert!(matches("cat", "Cat Jam", &[]));
+        assert!(!matches("Cat", "cat jam", &[]));
+        assert!(matches("Cat", "Cat jam", &[]));
+    }
+
+    #[test]
+    fn smart_accents() {
+        assert!(matches("cafe", "café?", &[]));
+        assert!(!matches("café", "cafe", &[]));
+        assert!(matches("café", "café?", &[]));
+        assert!(matches("#cafe", "x", &["Cafe"]));
+        assert!(!matches("#café", "x", &["cafe"]));
+    }
+
+    #[test]
+    fn fzf_operators() {
+        assert!(!matches("!cat", "cat jam", &[]));
+        assert!(matches("!cat", "dog", &[]));
+        assert!(!matches("!cat", "the cats", &[]));
+        assert!(matches("'at", "cat jam", &[]));
+        assert!(!matches("'cj", "cat jam", &[]));
+        assert!(matches("^cat", "cat jam", &[]));
+        assert!(!matches("^jam", "cat jam", &[]));
+        assert!(matches("jam$", "cat jam", &[]));
+        assert!(!matches("cat$", "cat jam", &[]));
+        assert!(matches("^cat$", "cat", &[]));
+        assert!(!matches("^cat$", "cat jam", &[]));
+        assert!(matches("\\!cat", "!cat", &[]));
+    }
+
     #[test]
     fn tag_filter_and_fuzzy_combine() {
         assert!(matches("#reaction cat", "cat vibing", &["reaction"]));

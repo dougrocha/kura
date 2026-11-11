@@ -1,27 +1,41 @@
 import Foundation
 
-/// The TUI's search (`src/search.rs`), for the sidebar's search field.
+/// The TUI's search (`src/search.rs`, nucleo with fzf syntax), for the sidebar.
 ///
-/// Words starting with `#` keep only images that have a tag starting with that
-/// word. Every other word must fuzzy match the image's name or tags: its
-/// letters in order, not necessarily together. Matching ignores case and
-/// accents. Best matches come first; ties keep the library's order.
+/// `#word` keeps only images with a tag starting with `word` (ignoring case).
+/// Every other word is matched against the image's name and tags:
+///
+/// - `cat` fuzzy: the letters in order, not necessarily together
+/// - `'cat` substring, `^cat` prefix, `cat$` suffix, `^cat$` exact
+/// - `!cat` excludes images containing "cat" (`!^cat`, `!cat$` also work)
+/// - a `\` before `!`, `^`, `'` or a final `$` makes it a plain character
+///
+/// Smart case and accents, as in nucleo: a word with a capital letter matches
+/// case exactly, and a word with an accent matches accents exactly.
+/// Best matches come first; ties keep the library's order.
 struct SearchQuery: Equatable {
     private(set) var tagPrefixes: [String] = []
-    private(set) var words: [String] = []
+    private(set) var atoms: [Atom] = []
+
+    struct Atom: Equatable {
+        enum Kind { case fuzzy, substring, prefix, suffix, exact }
+        var needle: String
+        var kind: Kind
+        var negative: Bool
+    }
 
     init(_ text: String) {
         for word in text.split(whereSeparator: \.isWhitespace).map(String.init) {
             if word.hasPrefix("#") {
-                let tag = Self.fold(String(word.dropFirst()))
+                let tag = String(word.dropFirst()).lowercased()
                 if !tag.isEmpty { tagPrefixes.append(tag) }
-            } else {
-                words.append(Self.fold(word))
+            } else if let atom = Self.atom(word) {
+                atoms.append(atom)
             }
         }
     }
 
-    var isEmpty: Bool { tagPrefixes.isEmpty && words.isEmpty }
+    var isEmpty: Bool { tagPrefixes.isEmpty && atoms.isEmpty }
 
     /// The images that match, best first.
     func filter(_ images: [KuraImage]) -> [KuraImage] {
@@ -34,17 +48,74 @@ struct SearchQuery: Equatable {
 
     /// nil when the image doesn't match; higher is a better match.
     func score(name: String, tags: [String]) -> Int? {
-        let foldedTags = tags.map(Self.fold)
-        let hasTags = tagPrefixes.allSatisfy { wanted in foldedTags.contains { $0.hasPrefix(wanted) } }
-        guard hasTags else { return nil }
+        let lowerTags = tags.map { $0.lowercased() }
+        guard tagPrefixes.allSatisfy({ wanted in lowerTags.contains { $0.hasPrefix(wanted) } }) else { return nil }
 
-        let haystack = Array(([Self.fold(name)] + foldedTags).joined(separator: " "))
+        let haystack = ([name] + tags).joined(separator: " ")
         var total = 0
-        for word in words {
-            guard let score = Self.fuzzyScore(Array(word), in: haystack) else { return nil }
-            total += score
+        for atom in atoms {
+            let score = Self.match(atom, in: haystack)
+            if atom.negative {
+                if score != nil { return nil }
+            } else {
+                guard let score else { return nil }
+                total += score
+            }
         }
         return total
+    }
+
+    /// nucleo's `Atom::parse`: `!` first, then `^` or `'`, then a final `$`.
+    private static func atom(_ word: String) -> Atom? {
+        var rest = Substring(word)
+        var negative = false
+        if rest.hasPrefix("!") {
+            negative = true
+            rest = rest.dropFirst()
+        } else if rest.hasPrefix("\\!") {
+            rest = rest.dropFirst()
+        }
+
+        var kind = Atom.Kind.fuzzy
+        if rest.hasPrefix("^") {
+            kind = .prefix
+            rest = rest.dropFirst()
+        } else if rest.hasPrefix("'") {
+            kind = .substring
+            rest = rest.dropFirst()
+        } else if rest.hasPrefix("\\^") || rest.hasPrefix("\\'") {
+            rest = rest.dropFirst()
+        }
+
+        if rest.hasSuffix("\\$") {
+            rest = rest.dropLast(2) + "$"
+        } else if rest.hasSuffix("$") {
+            kind = kind == .fuzzy ? .suffix : .exact
+            rest = rest.dropLast()
+        }
+
+        if negative && kind == .fuzzy { kind = .substring }
+        return rest.isEmpty ? nil : Atom(needle: String(rest), kind: kind, negative: negative)
+    }
+
+    private static func match(_ atom: Atom, in haystack: String) -> Int? {
+        // Smart case and accents: only fold what the needle doesn't spell out.
+        var options: String.CompareOptions = []
+        if atom.needle == atom.needle.lowercased() { options.insert(.caseInsensitive) }
+        if atom.needle == atom.needle.folding(options: .diacriticInsensitive, locale: nil) {
+            options.insert(.diacriticInsensitive)
+        }
+        let needle = atom.needle.folding(options: options, locale: nil)
+        let haystack = haystack.folding(options: options, locale: nil)
+        let exactBonus = needle.count * 6
+
+        switch atom.kind {
+        case .fuzzy: return fuzzyScore(Array(needle), in: Array(haystack))
+        case .substring: return haystack.contains(needle) ? exactBonus : nil
+        case .prefix: return haystack.hasPrefix(needle) ? exactBonus : nil
+        case .suffix: return haystack.hasSuffix(needle) ? exactBonus : nil
+        case .exact: return haystack == needle ? exactBonus * 2 : nil
+        }
     }
 
     /// Letters of `needle` in order within `haystack`. Consecutive letters and
@@ -64,9 +135,5 @@ struct SearchQuery: Equatable {
             index += 1
         }
         return score
-    }
-
-    private static func fold(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 }
