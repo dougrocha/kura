@@ -40,14 +40,27 @@ struct KuraClient: Sendable {
         url(image.thumbnailUrl, query: [URLQueryItem(name: "size", value: size)])
     }
 
+    /// The original file's bytes.
+    func file(_ image: KuraImage) async throws -> Data {
+        try await data(image.fileUrl)
+    }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
+        try Self.decoder.decode(T.self, from: try await data(path))
+    }
+
+    private func data(_ path: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(from: url(path))
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw (try? decoder.decode(KuraError.self, from: data))
+            throw (try? Self.decoder.decode(KuraError.self, from: data))
                 ?? KuraError(code: "http_\(http.statusCode)", message: "Server answered \(http.statusCode)")
         }
-        return try decoder.decode(T.self, from: data)
+        return data
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
     }
 }

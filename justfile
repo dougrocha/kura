@@ -88,6 +88,10 @@ debug-serve:
 test *args:
     cargo test --workspace {{args}}
 
+# The Mac app's tests (search, clipboard)
+mac-test:
+    swift test --package-path mac
+
 # Formatting and clippy
 lint:
     cargo fmt --all --check >/dev/null || echo "fmt: some files are unformatted; run: just fmt"

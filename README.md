@@ -89,6 +89,16 @@ While working on the app:
 - `just mac` runs it from source on the current environment's library.
 - `just app` builds `mac/build/Kura.app` and opens it.
 - `just xcode` opens the package in Xcode.
+- `just mac-test` runs its tests.
+
+In the app, the sidebar's search works like the TUI's (`#tag` filters by tag).
+
+| Key | Action |
+| --- | --- |
+| `⌘F` or `/` | Search |
+| `⌘C` | Copy the image (as a picture and as a file, so GIFs stay animated) |
+| `Return` or double-click | Copy the image and hide Kura, like `kura pick` |
+| `⌘R` | Reload |
 
 ## Usage
 

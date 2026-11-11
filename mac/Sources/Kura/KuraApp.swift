@@ -13,6 +13,10 @@ struct KuraApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Find") { appDelegate.library.focusSearch() }
+                    .keyboardShortcut("f")
+            }
             CommandGroup(after: .toolbar) {
                 Button("Reload") { Task { await appDelegate.library.load() } }
                     .keyboardShortcut("r")

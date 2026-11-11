@@ -5,13 +5,39 @@ import SwiftUI
 /// containers (sidebar, toolbar) plus glass tag chips over the preview.
 struct ContentView: View {
     @Environment(LibraryModel.self) private var library
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         @Bindable var library = library
         NavigationSplitView {
-            List(library.images, selection: $library.selection) { image in
+            List(library.visibleImages, selection: $library.selection) { image in
                 ImageRow(image: image)
             }
+            // Return or double-click: copy and hide, like `kura pick`.
+            .contextMenu(forSelectionType: KuraImage.ID.self) { _ in
+                Button("Copy") { Task { await library.copySelected() } }
+            } primaryAction: { _ in
+                Task { await library.pickSelected() }
+            }
+            // ⌘C while the list has focus; the search field keeps its own ⌘C.
+            // The copy fetches the file, so it can't hand back providers synchronously.
+            .onCopyCommand {
+                Task { await library.copySelected() }
+                return []
+            }
+            .overlay {
+                if !library.searchText.isEmpty && library.visibleImages.isEmpty {
+                    ContentUnavailableView.search(text: library.searchText)
+                }
+            }
+            // `/` jumps to the search field, as in the TUI.
+            .onKeyPress("/") {
+                library.focusSearch()
+                return .handled
+            }
+            .searchable(text: $library.searchText, placement: .sidebar, prompt: "Name, tags, #tag")
+            .searchFocused($searchFocused)
+            .onChange(of: library.searchRequests) { searchFocused = true }
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
             ZStack {
@@ -26,10 +52,30 @@ struct ContentView: View {
                 }
             }
             .overlay { status }
+            .overlay(alignment: .top) {
+                if let notice = library.notice {
+                    Text(notice)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: library.notice)
         }
         .navigationTitle("Kura")
         .navigationSubtitle(subtitle)
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await library.copySelected() }
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .help("Copy the image (⌘C). Return copies and hides Kura.")
+                .disabled(library.selected == nil)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await library.load() }
@@ -44,7 +90,9 @@ struct ContentView: View {
 
     private var subtitle: String {
         if library.isStarting { return "Starting…" }
-        let count = "\(library.images.count) images"
+        let total = library.images.count
+        let shown = library.visibleImages.count
+        let count = library.searchText.isEmpty ? "\(total) images" : "\(shown) of \(total) images"
         return library.isLive ? "\(count) · Live" : count
     }
 

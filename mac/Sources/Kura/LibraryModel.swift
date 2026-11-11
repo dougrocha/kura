@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Observation
 
 /// What the window shows, and the connection behind it.
@@ -15,6 +15,14 @@ final class LibraryModel {
     /// Connected to the server's change feed, so the list updates by itself.
     private(set) var isLive = false
     var selection: KuraImage.ID?
+    /// The sidebar's search, with the TUI's rules (see `SearchQuery`).
+    var searchText = "" {
+        didSet { selectBestMatch() }
+    }
+    /// Bumped by Find (⌘F) and `/`; the view focuses the search field.
+    private(set) var searchRequests = 0
+    /// Shown briefly after copying ("Copied cat jam").
+    private(set) var notice: String?
 
     @ObservationIgnored private let server = ServerProcess()
 
@@ -27,7 +35,53 @@ final class LibraryModel {
     }
 
     var selected: KuraImage? {
-        images.first { $0.id == selection }
+        visibleImages.first { $0.id == selection }
+    }
+
+    /// The images the sidebar shows: all of them, or the search's matches, best first.
+    var visibleImages: [KuraImage] {
+        SearchQuery(searchText).filter(images)
+    }
+
+    /// Keep the selection if it still matches, else jump to the best match, like the TUI.
+    private func selectBestMatch() {
+        let visible = visibleImages
+        if !visible.contains(where: { $0.id == selection }) {
+            selection = visible.first?.id
+        }
+    }
+
+    func focusSearch() {
+        searchRequests += 1
+    }
+
+    /// Copy the selected image to the clipboard. Returns whether it worked.
+    @discardableResult
+    func copySelected() async -> Bool {
+        guard let client, let image = selected else { return false }
+        do {
+            try await Pasteboard.copy(image, from: client)
+            show("Copied \(image.name)")
+            return true
+        } catch {
+            show("Couldn't copy: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Like `kura pick`: copy, then get out of the way so you can paste.
+    func pickSelected() async {
+        if await copySelected() {
+            NSApp.hide(nil)
+        }
+    }
+
+    private func show(_ message: String) {
+        notice = message
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if notice == message { notice = nil }
+        }
     }
 
     var isStarting: Bool { client == nil && error == nil }
@@ -70,7 +124,7 @@ final class LibraryModel {
         do {
             images = try await client.images()
             error = nil
-            if selected == nil { selection = images.first?.id }
+            selectBestMatch()
         } catch {
             self.error = error.localizedDescription
         }

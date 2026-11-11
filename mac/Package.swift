@@ -6,6 +6,7 @@ let package = Package(
     // Liquid Glass (glassEffect, glass button styles) starts at macOS 26.
     platforms: [.macOS(.v26)],
     targets: [
-        .executableTarget(name: "Kura", path: "Sources/Kura")
+        .executableTarget(name: "Kura", path: "Sources/Kura"),
+        .testTarget(name: "KuraTests", dependencies: ["Kura"], path: "Tests/KuraTests"),
     ]
 )
