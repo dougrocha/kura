@@ -17,7 +17,9 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "mac/.build/release/Kura" "$app/Contents/MacOS/Kura"
 cp target/release/kura-server "$app/Contents/MacOS/kura-server"
-sed "s/__VERSION__/$version/g" mac/Info.plist > "$app/Contents/Info.plist"
+# A new build number every build, so a running Kura can tell it was replaced.
+build=$(date +%Y%m%d%H%M%S)
+sed -e "s/__VERSION__/$version/g" -e "s/__BUILD__/$build/g" mac/Info.plist > "$app/Contents/Info.plist"
 
 # Inside out: the nested binary first, then the app. Hardened runtime on both.
 codesign --force --options runtime --timestamp=none --sign - "$app/Contents/MacOS/kura-server"

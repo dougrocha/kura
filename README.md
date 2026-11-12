@@ -16,7 +16,8 @@ clipboard.
   not from the URL.
 - **Terminal UI.** Browse with `j`/`k` and see a live image preview. Images load
   in the background and the most recent previews are cached.
-- **Search.** Press `/` to fuzzy search names and tags. `#reaction` filters by tag.
+- **Search.** Press `/` to fuzzy search names, tags and the text written inside
+  each image. `#reaction` filters by tag.
 - **Picker.** `kura pick` copies an image and exits, for binding to a hotkey.
 - **HTTP API and Mac app.** `kura serve` exposes the library over HTTP with a
   live change feed. The SwiftUI Mac app runs its own server and refreshes live.
@@ -95,13 +96,34 @@ While working on the app:
 - `just mac-test` runs its tests.
 
 In the app, the sidebar's search works like the TUI's (`#tag` filters by tag).
+The server does the matching, so both find the same images in the same order.
+The app reads the text in each image on your Mac (Apple Vision) and stores it
+in the library, so search also finds words inside a meme. The first pass over a
+big library takes a while; the window's subtitle shows "Reading text…" until
+it's done.
 
 | Key | Action |
 | --- | --- |
 | `⌘F` or `/` | Search |
 | `⌘C` | Copy the image (as a picture and as a file, so GIFs stay animated) |
 | `Return` or double-click | Copy the image and hide Kura, like `kura pick` |
+| `⌘O` or `+` | Add images from files |
+| `⌘V` | Add the image, file or link on the clipboard |
+| `⌘E` | Rename the image |
+| `⌘⌫` | Delete the image, after asking |
 | `⌘R` | Reload |
+
+You can also drop images onto the window: files from Finder, or images and
+links dragged from a browser. Formats Kura doesn't store (HEIC, TIFF
+screenshots) are converted to PNG first. Video clips (MP4, MOV) become looping
+GIFs: the first 15 seconds at 12 frames a second, at most 480 px on the long
+side. Only the Mac app converts video; `kura add` takes images only.
+
+Under the preview, a tag's `×` removes it and `+` adds one. The text in the
+image sits below the preview too; its menu edits that text by hand (your text
+wins over what was read), or reads it again. The right-click menu on a row has
+Rename and Delete as well. `⌘E` and `⌘⌫` work on the selected image and leave
+the search field alone while you type in it.
 
 ## Usage
 
@@ -115,6 +137,8 @@ kura list --tag reaction
 kura tags
 kura untag "cat vibing" music
 kura rename "cat vibing" "cat jam"
+kura caption "cat jam"            # show the text written in the image
+kura caption "cat jam" "when the moon hits"
 kura remove "cat jam"              # or: kura remove --file <any copy of it>
 
 kura tui
@@ -122,6 +146,13 @@ kura pick
 kura serve
 kura doctor [--fix]
 ```
+
+`kura caption <image> [TEXT | --none | --clear | --reread]` sets the text that
+search finds inside an image. `TEXT` sets it by hand, and your text wins over
+the text the Mac app read with OCR. `--none` says there is no text in the image,
+`--clear` drops your text so the OCR text shows again, and `--reread` drops the
+OCR text so the Mac app reads the image again. With no argument it prints the
+caption, `(no text)`, or `(not read yet)`.
 
 An image is named by its name or its hash. Without `-n`, the name comes from
 the file name. `--library <folder>` uses another library, `--clear-cache`
@@ -134,7 +165,7 @@ database.
 | --- | --- |
 | `j` / `↓` | Next image |
 | `k` / `↑` | Previous image |
-| `/` | Search by name or tag. `#word` keeps only images with a tag starting with `word` |
+| `/` | Search by name, tag or caption text. `#word` keeps only images with a tag starting with `word` |
 | `Esc` | Clear the search, or cancel an input. With no search, quit |
 | `Enter` | Copy image to clipboard |
 | `o` | Open in the default viewer |
@@ -142,6 +173,26 @@ database.
 | `t` | Add a tag |
 | `u` | Remove a tag |
 | `q` | Quit |
+
+### Search
+
+Words are fuzzy matched against the name and tags, with the usual fzf
+operators (`'exact`, `^prefix`, `suffix$`, `!not`). A word that misses the name
+and tags can still match the image's caption: it must start a word of the
+text (`wal` finds "WHEN THE BOSS WALKS IN"), or with `'` appear anywhere in it.
+Captions ignore case and accents, and one-letter words skip them. An image
+whose name or tags match always ranks above one found only by its caption, and a
+caption hit shows the matching words after its name. `!word` also hides images
+whose caption has the word.
+
+Only the Mac app reads text out of images, so images added from the terminal
+are found by caption once the app has read them. The list's footer says how
+many are `not read yet`. The TUI refreshes when the app or the CLI changes the
+library, without a key press.
+
+Captions are stored in a new table (migration `0004`). A `kura` built before
+it refuses to open a library that has it, with the "upgraded by a newer
+version" message, so update every copy of the binary.
 
 ### Picker
 

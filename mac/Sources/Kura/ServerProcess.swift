@@ -34,7 +34,7 @@ final class ServerProcess {
             throw Failure(message: "Can't find the kura server. Build the app with `just bundle`, or set KURA_BIN.")
         }
 
-        var arguments = ["--bind", "127.0.0.1:0", "--exit-with-stdin"]
+        var arguments = ["--bind", "127.0.0.1:0", "--exit-with-stdin", "--config-api"]
         if let library { arguments += ["--library", library] }
 
         let process = Process()

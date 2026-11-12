@@ -6,6 +6,10 @@ import SwiftUI
 struct ContentView: View {
     @Environment(LibraryModel.self) private var library
     @FocusState private var searchFocused: Bool
+    @State private var choosingFiles = false
+    @State private var dropTargeted = false
+    @State private var renaming: KuraImage?
+    @State private var deleting: KuraImage?
 
     var body: some View {
         @Bindable var library = library
@@ -16,7 +20,13 @@ struct ContentView: View {
             // Return or double-click: copy and hide, like `kura pick`.
             // Act on the rows SwiftUI passes: a right-clicked row needn't be selected.
             .contextMenu(forSelectionType: KuraImage.ID.self) { ids in
-                Button("Copy") { Task { await library.copy(library.image(in: ids)) } }
+                let image = library.image(in: ids)
+                Button("Copy") { Task { await library.copy(image) } }
+                Divider()
+                Button("Rename…") { renaming = image }
+                    .disabled(image == nil)
+                Button("Delete…", role: .destructive) { deleting = image }
+                    .disabled(image == nil)
             } primaryAction: { ids in
                 Task { await library.pick(library.image(in: ids)) }
             }
@@ -29,8 +39,15 @@ struct ContentView: View {
                 Task { await library.copy(restoring: snapshot) }
                 return []
             }
+            // ⌘V adds what's on the clipboard: an image, a file from Finder, or a link.
+            .onPasteCommand(of: NewImage.acceptedTypes) { providers in
+                add(providers)
+            }
             .overlay {
-                if !library.searchText.isEmpty && library.visibleImages.isEmpty {
+                if let message = library.searchError {
+                    ContentUnavailableView("Can't Search", systemImage: "exclamationmark.triangle", description: Text(message))
+                        .background(.background)
+                } else if !library.searchText.isEmpty && library.visibleImages.isEmpty {
                     ContentUnavailableView.search(text: library.searchText)
                 }
             }
@@ -39,11 +56,12 @@ struct ContentView: View {
                 library.focusSearch()
                 return .handled
             }
-            .searchable(text: $library.searchText, placement: .sidebar, prompt: "Name, tags, #tag")
+            .searchable(text: $library.searchText, placement: .sidebar, prompt: "Name, tags, text in image, #tag")
             .searchFocused($searchFocused)
             // Return in the search field picks the best match, like `kura pick`.
-            .onSubmit(of: .search) { Task { await library.pick() } }
+            .onSubmit(of: .search) { Task { await library.pickBestMatch() } }
             .onChange(of: library.searchRequests) { searchFocused = true }
+            .onChange(of: searchFocused) { library.isSearching = searchFocused }
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
             ZStack {
@@ -53,7 +71,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         library.images.isEmpty ? "No Images" : "No Image Selected",
                         systemImage: "photo.on.rectangle.angled",
-                        description: Text(library.images.isEmpty ? "Add some with `kura add <file>`." : "")
+                        description: Text(library.images.isEmpty ? "Drop images here, paste one, or press ⌘O." : "")
                     )
                 }
             }
@@ -70,9 +88,54 @@ struct ContentView: View {
             }
             .animation(.snappy, value: library.notice)
         }
+        .onDrop(of: NewImage.acceptedTypes, isTargeted: $dropTargeted) { providers in
+            add(providers)
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .background(Color.accentColor.opacity(0.08), in: .rect(cornerRadius: 14))
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
+        .fileImporter(isPresented: $choosingFiles, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            Task { await library.add(urls.map(NewImage.file)) }
+        }
+        .onChange(of: library.addRequests) { choosingFiles = true }
+        .onChange(of: library.renameRequests) {
+            if renaming == nil && deleting == nil { renaming = library.selected }
+        }
+        .onChange(of: library.deleteRequests) {
+            if renaming == nil && deleting == nil { deleting = library.selected }
+        }
+        .sheet(item: $renaming) { image in RenameSheet(image: image) }
+        .confirmationDialog(
+            "Delete “\(deleting?.name ?? "")”?",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible, presenting: deleting
+        ) { image in
+            Button("Delete", role: .destructive) { Task { await library.delete(image) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes the image and its tags from your library. This can't be undone.")
+        }
+        .overlay(alignment: .bottomTrailing) { UpdatePill() }
         .navigationTitle("Kura")
         .navigationSubtitle(subtitle)
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    choosingFiles = true
+                } label: {
+                    Label("Add Images", systemImage: "plus")
+                }
+                .help("Add images (⌘O). You can also drop or paste them.")
+                .disabled(library.client == nil)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await library.copy() }
@@ -82,23 +145,24 @@ struct ContentView: View {
                 .help("Copy the image (⌘C). Return copies and hides Kura.")
                 .disabled(library.selected == nil)
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await library.load() }
-                } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
-                }
-                .disabled(library.client == nil || library.isLoading)
-            }
         }
         .task { await library.run() }
     }
 
+    private func add(_ providers: [NSItemProvider]) {
+        Task { await library.add(await NewImage.load(providers)) }
+    }
+
     private var subtitle: String {
         if library.isStarting { return "Starting…" }
+        if library.pendingAdds > 0 { return "Adding \(library.pendingAdds)…" }
+        if let progress = library.captions.progress {
+            return "Reading text… \(progress.done.formatted()) of \(progress.total.formatted())"
+        }
         let total = library.images.count
         let shown = library.visibleImages.count
-        let count = library.searchText.isEmpty ? "\(total) images" : "\(shown) of \(total) images"
+        var count = library.searchText.isEmpty ? "\(total) images" : "\(shown) of \(total) images"
+        if !library.searchText.isEmpty && library.unreadCount > 0 { count += " · \(library.unreadCount) not read yet" }
         return library.isLive ? "\(count) · Live" : count
     }
 
@@ -135,7 +199,12 @@ struct ImageRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(image.name).lineLimit(1)
-                if !image.tags.isEmpty {
+                if let snippet = library.snippets[image.id] {
+                    Text(snippet.attributed)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if !image.tags.isEmpty {
                     Text(image.tags.joined(separator: ", "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -152,52 +221,28 @@ struct ImageDetail: View {
     let image: KuraImage
 
     var body: some View {
-        AsyncImage(url: library.client?.thumbnailURL(image, size: "preview")) { phase in
-            switch phase {
-            case .success(let preview):
-                preview.resizable().scaledToFit()
-            case .failure:
-                ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
-            default:
-                ProgressView()
+        VStack(spacing: 12) {
+            AsyncImage(url: library.client?.thumbnailURL(image, size: "preview")) { phase in
+                switch phase {
+                case .success(let preview):
+                    preview.resizable().scaledToFit()
+                case .failure:
+                    ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
+                default:
+                    ProgressView()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            CaptionSection(image: image).id(image.hash)
         }
         .padding(24)
         .padding(.bottom, 44)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The tags float over the preview on glass, like the TUI's tag bar.
         .overlay(alignment: .bottom) {
-            TagBar(tags: image.tags).padding(14)
+            TagBar(image: image).id(image.hash).padding(14)
         }
         .navigationTitle(image.name)
-    }
-}
-
-struct TagBar: View {
-    let tags: [String]
-
-    var body: some View {
-        GlassEffectContainer(spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "tag")
-                    .foregroundStyle(.secondary)
-                    .padding(8)
-                    .glassEffect(.regular, in: .circle)
-                if tags.isEmpty {
-                    Text("No tags")
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .glassEffect(.regular, in: .capsule)
-                } else {
-                    ForEach(tags, id: \.self) { tag in
-                        Text(tag)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .glassEffect(.regular, in: .capsule)
-                    }
-                }
-            }
-        }
     }
 }
