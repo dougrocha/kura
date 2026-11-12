@@ -257,3 +257,142 @@ async fn events_stream_edits_and_resume_from_last_event_id() {
     let replay = read_events(&mut resumed, 1).await;
     assert_eq!(replay[0], events[1]);
 }
+
+async fn put_caption(app: &Router, id: &str, source: &str, body: Value) -> Reply {
+    send(app, Method::PUT, &format!("/images/{id}/captions/{source}"), body.to_string()).await
+}
+
+#[tokio::test]
+async fn captions_are_set_cleared_and_idempotent() {
+    let (app, _tmp) = app().await;
+    let hash = send(&app, Method::POST, "/images?name=cat", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    assert_eq!(send(&app, Method::GET, "/images/cat", Body::empty()).await.json()["caption"], Value::Null);
+
+    for _ in 0..2 {
+        let reply =
+            put_caption(&app, &hash, "ocr", json!({"text": "WHEN THE\nMOON  HITS", "engine": "vision:1"})).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            reply.json()["caption"],
+            json!({"text": "WHEN THE MOON HITS", "source": "ocr", "engine": "vision:1"})
+        );
+    }
+
+    // A person's caption wins; an ocr write can't replace it.
+    let reply = put_caption(&app, "cat", "manual", json!({"text": "the moon"})).await;
+    assert_eq!(reply.json()["caption"], json!({"text": "the moon", "source": "manual", "engine": null}));
+    let reply = put_caption(&app, &hash, "ocr", json!({"text": "other", "engine": "vision:1"})).await;
+    assert_eq!(reply.json()["caption"]["source"], "manual");
+
+    for _ in 0..2 {
+        let reply = send(&app, Method::DELETE, &format!("/images/{hash}/captions/manual"), Body::empty()).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.json()["caption"], json!({"text": "other", "source": "ocr", "engine": "vision:1"}));
+    }
+
+    // Read, no text: an empty string, not null.
+    let reply = put_caption(&app, &hash, "ocr", json!({"text": " \n ", "engine": "vision:1"})).await;
+    assert_eq!(reply.json()["caption"]["text"], "");
+    let reply = send(&app, Method::DELETE, &format!("/images/{hash}/captions/ocr"), Body::empty()).await;
+    assert_eq!(reply.json()["caption"], Value::Null);
+
+    let list = send(&app, Method::GET, "/images", Body::empty()).await.json();
+    assert!(list[0].as_object().unwrap().contains_key("caption"));
+}
+
+#[tokio::test]
+async fn caption_requests_are_validated() {
+    let (app, _tmp) = app().await;
+    send(&app, Method::POST, "/images?name=cat", png(1)).await;
+
+    let cases = [
+        ("cat", "ocr", json!({"text": "x"})),
+        ("cat", "ocr", json!({"text": "x", "engine": "Not Valid"})),
+        ("cat", "manual", json!({"text": "x", "engine": "vision:1"})),
+        ("cat", "robot", json!({"text": "x"})),
+    ];
+    for (id, source, body) in cases {
+        let reply = put_caption(&app, id, source, body.clone()).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{source} {body}");
+        assert_eq!(reply.json()["code"], "invalid_input", "{source} {body}");
+    }
+    let reply = send(&app, Method::DELETE, "/images/cat/captions/robot", Body::empty()).await;
+    assert_eq!((reply.status, reply.json()["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_input")));
+
+    let reply = put_caption(&app, "cat", "manual", json!({"text": "x", "extra": 1})).await;
+    assert_eq!(
+        (reply.status, reply.json()["code"].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_request"))
+    );
+    let reply = put_caption(&app, "nope", "manual", json!({"text": "x"})).await;
+    assert_eq!((reply.status, reply.json()["code"].clone()), (StatusCode::NOT_FOUND, json!("not_found")));
+    let reply = send(&app, Method::DELETE, "/images/nope/captions/ocr", Body::empty()).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn search_ranks_names_above_captions_and_reports_coverage() {
+    let (app, _tmp) = app().await;
+    let office =
+        send(&app, Method::POST, "/images?name=office", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    let baby =
+        send(&app, Method::POST, "/images?name=moon%20baby", png(2)).await.json()["hash"].as_str().unwrap().to_owned();
+    send(&app, Method::POST, "/images?name=unread", png(3)).await;
+    put_caption(&app, &office, "ocr", json!({"text": "the moon again", "engine": "vision:1"})).await;
+
+    let reply = send(&app, Method::GET, "/search?q=moon", Body::empty()).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let body = reply.json();
+    assert_eq!(
+        body["hits"],
+        json!([
+            {"hash": baby},
+            {"hash": office, "snippet": {
+                "leading_cut": false,
+                "segments": [
+                    {"text": "the ", "matched": false},
+                    {"text": "moon", "matched": true},
+                    {"text": " again", "matched": false},
+                ],
+                "trailing_cut": false,
+            }},
+        ])
+    );
+    assert_eq!((body["images"].clone(), body["unread"].clone()), (json!(3), json!(2)));
+    assert!(body["seq"].as_u64().unwrap() > 0);
+    assert!(!body["hits"][0].as_object().unwrap().contains_key("snippet"), "omitted, not null");
+
+    // Percent-encoded query text, and the empty query is the whole library.
+    let reply = send(&app, Method::GET, "/search?q=%23nope%20moon", Body::empty()).await;
+    assert_eq!(reply.json()["hits"], json!([]));
+    let reply = send(&app, Method::GET, "/search", Body::empty()).await;
+    assert_eq!(reply.json()["hits"].as_array().unwrap().len(), 3);
+    let reply = send(&app, Method::GET, "/search?q=", Body::empty()).await;
+    assert_eq!(reply.json()["hits"].as_array().unwrap().len(), 3);
+
+    // The answer follows writes.
+    send(&app, Method::DELETE, &format!("/images/{office}"), Body::empty()).await;
+    let reply = send(&app, Method::GET, "/search?q=again", Body::empty()).await;
+    assert_eq!(reply.json()["hits"], json!([]));
+}
+
+#[tokio::test]
+async fn captioned_events_stream_without_the_text() {
+    let (app, _tmp) = app().await;
+    let response = app.clone().oneshot(Request::get("/events").body(Body::empty()).unwrap()).await.unwrap();
+    let mut live = response.into_body();
+
+    let hash = send(&app, Method::POST, "/images?name=cat", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    put_caption(&app, &hash, "ocr", json!({"text": "secret words", "engine": "vision:1"})).await;
+    put_caption(&app, &hash, "ocr", json!({"text": "secret words", "engine": "vision:1"})).await;
+    send(&app, Method::DELETE, &format!("/images/{hash}/captions/ocr"), Body::empty()).await;
+
+    let events = read_events(&mut live, 3).await;
+    assert_eq!(events[1].1, "captioned");
+    assert_eq!(events[2].1, "captioned");
+    let first: Value = serde_json::from_str(&events[1].2).unwrap();
+    assert_eq!((first["hash"].as_str(), first["detail"].as_str()), (Some(hash.as_str()), Some("ocr")));
+    let second: Value = serde_json::from_str(&events[2].2).unwrap();
+    assert_eq!(second["detail"], "cleared:ocr");
+    assert!(events.iter().all(|e| !e.2.contains("secret")));
+}

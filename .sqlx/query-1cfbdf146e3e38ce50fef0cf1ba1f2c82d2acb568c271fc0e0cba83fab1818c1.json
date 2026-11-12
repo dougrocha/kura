@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO captions (image_hash, source, text, engine) VALUES (?, ?, ?, ?)\n             ON CONFLICT(image_hash, source) DO UPDATE\n                SET text = excluded.text, engine = excluded.engine, updated_at = datetime('now')\n                WHERE captions.text IS NOT excluded.text OR captions.engine IS NOT excluded.engine",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "1cfbdf146e3e38ce50fef0cf1ba1f2c82d2acb568c271fc0e0cba83fab1818c1"
+}

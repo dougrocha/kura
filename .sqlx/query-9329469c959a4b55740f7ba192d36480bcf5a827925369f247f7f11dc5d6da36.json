@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM captions WHERE image_hash = ? AND source = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9329469c959a4b55740f7ba192d36480bcf5a827925369f247f7f11dc5d6da36"
+}

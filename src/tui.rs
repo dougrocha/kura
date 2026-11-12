@@ -6,18 +6,36 @@ use hako::{
     style::{Color, Style},
     widgets::{Block, Borders, Line, List, ListItem, Paragraph, Span},
 };
-use nucleo_matcher::{Config, Matcher};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use kura_core::{Image, ImageFilter, ImageName, Library, Tag, ThumbSize};
+use kura_core::{
+    ChangeSeq, Coverage, Hit, Image, ImageHash, ImageName, Library, Outcome, Reading, SearchQuery, Snippet, Tag,
+    ThumbSize,
+};
 
-use crate::{image_protocol_cache::ImageProtocolCache, search};
+use crate::image_protocol_cache::ImageProtocolCache;
 
 pub enum Action {
-    Rename { index: usize, new_name: String },
-    Tag { index: usize, tag: String },
-    Untag { index: usize, tag: String },
+    Rename {
+        hash: ImageHash,
+        new_name: String,
+    },
+    Tag {
+        hash: ImageHash,
+        tag: String,
+    },
+    Untag {
+        hash: ImageHash,
+        tag: String,
+    },
+    /// Run the search again. A new query selects the best match; otherwise the
+    /// selected image stays selected.
+    Search {
+        new_query: bool,
+    },
+    /// Every tick: search again if someone else (the Mac app, the CLI) wrote.
+    Poll,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,14 +48,18 @@ pub enum Mode {
 pub struct KuraApp {
     lib: Library,
     mode: Mode,
-    images: Vec<Image>,
-    /// Indices into `images` that match the search, in display order.
-    visible: Vec<usize>,
+    /// `pick.close_after_copy`: Enter in the picker exits.
+    close_after_copy: bool,
+    /// What the search matched, best first. An empty query matches everything.
+    hits: Vec<Hit>,
+    coverage: Coverage,
+    /// The change-log position `hits` reflects.
+    seq: ChangeSeq,
+    search_error: Option<String>,
     scroll_list: ScrollList,
 
     search_input: Option<TextInput>,
     search_query: String,
-    matcher: Matcher,
 
     should_quit: bool,
 
@@ -63,11 +85,9 @@ pub struct KuraApp {
 }
 
 impl KuraApp {
-    pub async fn new(lib: Library, mode: Mode) -> kura_core::Result<Self> {
-        let images = lib.list(&ImageFilter::all()).await?;
-        let visible = (0..images.len()).collect();
-
-        let scroll_list = ScrollList::new(images.len());
+    pub async fn new(lib: Library, mode: Mode, close_after_copy: bool) -> kura_core::Result<Self> {
+        let results = lib.search(&SearchQuery::parse("")).await?;
+        let scroll_list = ScrollList::new(results.hits.len());
 
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
 
@@ -81,12 +101,14 @@ impl KuraApp {
         let mut app = Self {
             lib,
             mode,
-            images,
-            visible,
+            close_after_copy,
+            hits: results.hits,
+            coverage: results.coverage,
+            seq: results.seq,
+            search_error: None,
             scroll_list,
             search_input: None,
             search_query: String::new(),
-            matcher: Matcher::new(Config::DEFAULT),
             image_protocol,
             proto_rx,
             proto_tx,
@@ -115,32 +137,28 @@ impl KuraApp {
         let Some(position) = self.scroll_list.selected() else {
             return;
         };
-        let selected = self.visible[position];
-
-        let selected_hash = self.images[selected].hash().to_string();
-        if let Some(protocol) = self.protocol_cache.take(&selected_hash) {
+        let selected_hash = self.hits[position].image().hash().clone();
+        if let Some(protocol) = self.protocol_cache.take(selected_hash.as_str()) {
             self.image_protocol.replace_protocol(protocol);
         } else {
-            self.spawn_image_load(selected);
+            self.spawn_image_load(selected_hash);
         }
 
-        let neighbors: Vec<usize> = [position.wrapping_sub(2), position.wrapping_sub(1), position + 1, position + 2]
-            .into_iter()
-            .filter_map(|p| self.visible.get(p).copied())
-            .filter(|&i| !self.protocol_cache.contains(self.images[i].hash().as_str()))
-            .collect();
+        let neighbors: Vec<ImageHash> =
+            [position.wrapping_sub(2), position.wrapping_sub(1), position + 1, position + 2]
+                .into_iter()
+                .filter_map(|p| self.hits.get(p))
+                .map(|hit| hit.image().hash())
+                .filter(|hash| !self.protocol_cache.contains(hash.as_str()))
+                .cloned()
+                .collect();
 
-        for index in neighbors {
-            self.spawn_image_load(index);
+        for hash in neighbors {
+            self.spawn_image_load(hash);
         }
     }
 
-    fn spawn_image_load(&self, index: usize) {
-        let Some(img) = self.images.get(index) else {
-            return;
-        };
-
-        let hash = img.hash().clone();
+    fn spawn_image_load(&self, hash: ImageHash) {
         let lib = self.lib.clone();
         let picker = self.picker.clone();
         let tx = self.proto_tx.clone();
@@ -171,33 +189,48 @@ impl KuraApp {
         });
     }
 
-    /// Index into `images` of the selected row.
-    fn selected_index(&self) -> Option<usize> {
-        self.scroll_list.selected().and_then(|position| self.visible.get(position).copied())
-    }
-
     fn selected(&self) -> Option<&Image> {
-        self.selected_index().map(|i| &self.images[i])
+        self.scroll_list.selected().and_then(|position| self.hits.get(position)).map(Hit::image)
     }
 
-    /// Re-runs the search and selects the best match.
-    fn apply_search(&mut self) {
-        let before = self.selected_index();
-        self.visible = search::filter(&self.images, &self.search_query, &mut self.matcher);
-        self.scroll_list = ScrollList::new(self.visible.len());
-        if self.selected_index() != before {
+    fn selected_hash(&self) -> Option<ImageHash> {
+        self.selected().map(|image| image.hash().clone())
+    }
+
+    /// Searches again. A new query selects the best match; a refresh keeps the
+    /// selected image selected (by hash, so rows moving doesn't shift it).
+    async fn apply_search(&mut self, new_query: bool) {
+        let before = self.selected_hash();
+        match self.lib.search(&SearchQuery::parse(&self.search_query)).await {
+            Ok(results) => {
+                self.search_error = None;
+                self.seq = results.seq;
+                self.coverage = results.coverage;
+                self.hits = results.hits;
+            }
+            Err(e) => {
+                self.search_error = Some(e.to_string());
+                return;
+            }
+        }
+        self.scroll_list = ScrollList::new(self.hits.len());
+        if let Some(position) = before
+            .as_ref()
+            .filter(|_| !new_query)
+            .and_then(|hash| self.hits.iter().position(|hit| hit.image().hash() == hash))
+        {
+            self.scroll_list.select(position);
+        }
+        if self.selected_hash() != before {
             self.load_selected_image();
         }
     }
 
-    /// Drops the filter but stays on the image that was selected.
-    fn clear_search(&mut self) {
-        let selected = self.selected_index();
-        self.search_query.clear();
-        self.apply_search();
-        if let Some(position) = self.visible.iter().position(|&i| Some(i) == selected) {
-            self.scroll_list.select(position);
-            self.load_selected_image();
+    /// Searching again when the library changed under us: the Mac app wrote a
+    /// caption, or the CLI added an image.
+    async fn refresh_if_changed(&mut self) {
+        if self.lib.head().await.is_ok_and(|head| head != self.seq) {
+            self.apply_search(false).await;
         }
     }
 
@@ -225,19 +258,6 @@ impl KuraApp {
         let _ = ctx.write_image(&self.lib.path_of(img));
     }
 
-    async fn reload_images(&mut self) {
-        if let Ok(images) = self.lib.list(&ImageFilter::all()).await {
-            let selected = self.scroll_list.selected();
-            self.images = images;
-            self.visible = search::filter(&self.images, &self.search_query, &mut self.matcher);
-            self.scroll_list = ScrollList::new(self.visible.len());
-            if let Some(i) = selected {
-                let clamped = i.min(self.visible.len().saturating_sub(1));
-                self.scroll_list.select(clamped);
-            }
-        }
-    }
-
     fn open_selected(&self) {
         let Some(img) = self.selected() else { return };
         let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
@@ -261,11 +281,12 @@ impl App for KuraApp {
                         TextInputEvent::Submitted(_) => self.search_input = None,
                         TextInputEvent::Cancelled => {
                             self.search_input = None;
-                            self.clear_search();
+                            self.search_query.clear();
+                            return Some(Action::Search { new_query: false });
                         }
                         TextInputEvent::Changed => {
                             self.search_query = input.value().to_string();
-                            self.apply_search();
+                            return Some(Action::Search { new_query: true });
                         }
                         TextInputEvent::Ignored => match key.code {
                             KeyCode::Down => self.select_next(),
@@ -276,8 +297,8 @@ impl App for KuraApp {
                 } else if let Some(input) = &mut self.rename_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) => {
-                            if let Some(index) = self.selected_index() {
-                                return Some(Action::Rename { index, new_name: val });
+                            if let Some(hash) = self.selected_hash() {
+                                return Some(Action::Rename { hash, new_name: val });
                             }
                         }
                         TextInputEvent::Cancelled => {
@@ -289,8 +310,8 @@ impl App for KuraApp {
                 } else if let Some(input) = &mut self.tag_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) if !val.is_empty() => {
-                            if let Some(index) = self.selected_index() {
-                                return Some(Action::Tag { index, tag: val });
+                            if let Some(hash) = self.selected_hash() {
+                                return Some(Action::Tag { hash, tag: val });
                             }
                         }
                         TextInputEvent::Cancelled => {
@@ -302,8 +323,8 @@ impl App for KuraApp {
                 } else if let Some(input) = &mut self.untag_input {
                     match input.handle_key(key) {
                         TextInputEvent::Submitted(val) if !val.is_empty() => {
-                            if let Some(index) = self.selected_index() {
-                                return Some(Action::Untag { index, tag: val });
+                            if let Some(hash) = self.selected_hash() {
+                                return Some(Action::Untag { hash, tag: val });
                             }
                         }
                         TextInputEvent::Cancelled => {
@@ -314,7 +335,10 @@ impl App for KuraApp {
                     }
                 } else {
                     match key.code {
-                        KeyCode::Esc if !self.search_query.is_empty() => self.clear_search(),
+                        KeyCode::Esc if !self.search_query.is_empty() => {
+                            self.search_query.clear();
+                            return Some(Action::Search { new_query: false });
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                         KeyCode::Char('/') => {
                             self.search_input = Some(TextInput::new(self.search_query.clone()));
@@ -323,7 +347,7 @@ impl App for KuraApp {
                         KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
                         KeyCode::Enter => {
                             self.copy_selected_to_clipboard();
-                            if self.mode == Mode::Pick {
+                            if self.mode == Mode::Pick && self.close_after_copy {
                                 self.should_quit = true;
                             }
                         }
@@ -358,6 +382,7 @@ impl App for KuraApp {
                         self.image_protocol.update_resized_protocol(response);
                     }
                 }
+                return Some(Action::Poll);
             }
             _ => {}
         }
@@ -366,48 +391,49 @@ impl App for KuraApp {
 
     async fn on_action(&mut self, action: Action) {
         match action {
-            Action::Rename { index, new_name } => {
+            Action::Search { new_query } => self.apply_search(new_query).await,
+            Action::Poll => self.refresh_if_changed().await,
+            Action::Rename { hash, new_name } => {
                 let result = match ImageName::parse(&new_name) {
-                    Ok(name) => self.lib.rename(self.images[index].hash(), name).await,
+                    Ok(name) => self.lib.rename(&hash, name).await,
                     Err(e) => Err(e.into()),
                 };
                 match result {
                     Ok(_) => {
                         self.rename_input = None;
-                        self.reload_images().await;
-                        self.load_selected_image();
+                        self.apply_search(false).await;
                     }
                     Err(e) => {
                         self.rename_error = Some(e.to_string());
                     }
                 }
             }
-            Action::Tag { index, tag } => {
+            Action::Tag { hash, tag } => {
                 let result = match Tag::parse(&tag) {
-                    Ok(tag) => self.lib.tag(self.images[index].hash(), &[tag]).await,
+                    Ok(tag) => self.lib.tag(&hash, &[tag]).await,
                     Err(e) => Err(e.into()),
                 };
                 match result {
                     Ok(_) => {
                         self.tag_input = None;
                         self.tag_error = None;
-                        self.reload_images().await;
+                        self.apply_search(false).await;
                     }
                     Err(e) => {
                         self.tag_error = Some(e.to_string());
                     }
                 }
             }
-            Action::Untag { index, tag } => {
+            Action::Untag { hash, tag } => {
                 let result = match Tag::parse(&tag) {
-                    Ok(tag) => self.lib.untag(self.images[index].hash(), &tag).await,
+                    Ok(tag) => self.lib.untag(&hash, &tag).await,
                     Err(e) => Err(e.into()),
                 };
                 match result {
                     Ok(_) => {
                         self.untag_input = None;
                         self.tag_error = None;
-                        self.reload_images().await;
+                        self.apply_search(false).await;
                     }
                     Err(e) => {
                         self.tag_error = Some(e.to_string());
@@ -423,22 +449,30 @@ impl App for KuraApp {
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
             .split(frame.area());
 
-        let items: Vec<ListItem> =
-            self.visible.iter().map(|&i| ListItem::new(self.images[i].name().to_string())).collect();
+        let items: Vec<ListItem> = self.hits.iter().map(row).collect();
 
         let list_title = if self.search_query.is_empty() {
             "Images  [/] search  [r] rename".to_string()
         } else {
-            format!("Images {}/{}  /{}  [Esc] clear", self.visible.len(), self.images.len(), self.search_query)
+            format!("Images {}/{}  /{}  [Esc] clear", self.hits.len(), self.coverage.images, self.search_query)
+        };
+
+        let dim = Style::default().fg(Color::DarkGray);
+        let footer = if let Some(error) = &self.search_error {
+            Line::from(Span::styled(error.as_str(), Style::default().fg(Color::Red)))
+        } else if self.coverage.unread > 0 {
+            Line::from(Span::styled(format!("{} not read yet", self.coverage.unread), dim))
+        } else {
+            Line::from("")
         };
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(list_title))
+            .block(Block::default().borders(Borders::ALL).title(list_title).title_bottom(footer))
             .highlight_style(Style::default().fg(Color::Yellow))
             .highlight_symbol("> ");
 
         let active_input: Option<(&TextInput, Option<&str>, &str)> = if let Some(input) = &self.search_input {
-            Some((input, None, "Search  name, tags, #tag"))
+            Some((input, None, "Search  name, tags, text, #tag"))
         } else if let Some(input) = &self.rename_input {
             Some((input, self.rename_error.as_deref(), "Rename"))
         } else if let Some(input) = &self.tag_input {
@@ -487,9 +521,9 @@ impl App for KuraApp {
         if self.image_protocol.protocol_type().is_some() {
             frame.render_stateful_widget(StatefulImage::new(), inner, &mut self.image_protocol);
         } else {
-            let msg = if self.images.is_empty() {
+            let msg = if self.coverage.images == 0 {
                 "No images found.".to_string()
-            } else if self.visible.is_empty() {
+            } else if self.hits.is_empty() {
                 "No matches.".to_string()
             } else {
                 "Loading...".to_string()
@@ -499,16 +533,18 @@ impl App for KuraApp {
         }
 
         let tags_text = if let Some(img) = self.selected() {
-            if img.tags().is_empty() {
-                Line::from(Span::styled("no tags", Style::default().fg(Color::DarkGray)))
+            let mut spans: Vec<Span> = if img.tags().is_empty() {
+                vec![Span::styled("no tags", dim)]
             } else {
-                let spans: Vec<Span> = img
-                    .tags()
+                img.tags()
                     .iter()
                     .flat_map(|t| [Span::styled(t.as_str(), Style::default().fg(Color::Yellow)), Span::raw("  ")])
-                    .collect();
-                Line::from(spans)
+                    .collect()
+            };
+            if let Some(caption) = caption_text(img) {
+                spans.push(Span::styled(format!("  {caption}"), dim));
             }
+            Line::from(spans)
         } else {
             Line::from("")
         };
@@ -518,5 +554,127 @@ impl App for KuraApp {
         let tags_inner = tags_block.inner(right_chunks[1]);
         frame.render_widget(tags_block, right_chunks[1]);
         frame.render_widget(Paragraph::new(tags_text), tags_inner);
+    }
+}
+
+/// A list row: the name, and for a caption hit a dim `· …snippet…` with the
+/// matched words in white.
+fn row(hit: &Hit) -> ListItem<'static> {
+    let name = hit.image().name().to_string();
+    match hit.snippet() {
+        None => ListItem::new(name),
+        Some(snippet) => {
+            let dim = Style::default().fg(Color::DarkGray);
+            let mut spans = vec![Span::raw(name), Span::styled(" · ", dim)];
+            spans.extend(snippet_spans(snippet));
+            ListItem::new(Line::from(spans))
+        }
+    }
+}
+
+fn snippet_spans(snippet: &Snippet) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let matched = Style::default().fg(Color::White);
+    let cut = |show: bool| show.then(|| Span::styled("…", dim));
+
+    let mut spans: Vec<Span> = cut(snippet.leading_cut).into_iter().collect();
+    spans.extend(snippet.segments.iter().map(|s| Span::styled(s.text.clone(), if s.matched { matched } else { dim })));
+    spans.extend(cut(snippet.trailing_cut));
+    spans
+}
+
+/// The caption to show under the preview: the text, marked with a pencil when a
+/// person wrote it. Nothing when it's unread or has no text.
+fn caption_text(image: &Image) -> Option<String> {
+    let reading = image.caption()?;
+    let Outcome::Text(text) = reading.outcome() else { return None };
+    Some(match reading {
+        Reading::Manual { .. } => format!("✎ {text}"),
+        Reading::Ocr { .. } => text.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use kura_core::{CaptionEdit, CaptionText, LibraryPaths, NewName, Segment, Source};
+
+    use super::*;
+
+    fn png(seed: u8) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 4, image::Rgb([seed, 0, 0]))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    async fn add(lib: &Library, seed: u8, name: &str) -> ImageHash {
+        let name = ImageName::parse(name).unwrap();
+        let added = lib.add(Source::bytes(png(seed), None), NewName::Exactly(name), &[], None).await.unwrap();
+        added.image().hash().clone()
+    }
+
+    fn caption(text: &str) -> CaptionEdit {
+        CaptionEdit::Manual(CaptionText::normalize(text))
+    }
+
+    fn names(app: &KuraApp) -> Vec<&str> {
+        app.hits.iter().map(|hit| hit.image().name().as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn search_keeps_selection_by_hash_and_follows_other_writers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(LibraryPaths::under(tmp.path())).await.unwrap();
+        let office = add(&lib, 1, "office").await;
+        let moon = add(&lib, 2, "moon baby").await;
+        add(&lib, 3, "plain").await;
+        let _ = lib.set_caption(&office, caption("WHEN THE BOSS WALKS IN")).await.unwrap();
+
+        let mut app = KuraApp::new(lib.clone(), Mode::Browse, false).await.unwrap();
+        assert_eq!(names(&app), ["plain", "moon baby", "office"]);
+        assert_eq!(app.coverage.unread, 2);
+
+        // A new query selects the best match.
+        app.search_query = "boss".into();
+        app.apply_search(true).await;
+        assert_eq!(names(&app), ["office"]);
+        assert_eq!(app.selected_hash(), Some(office.clone()));
+        assert!(app.hits[0].snippet().is_some());
+
+        // Clearing it keeps the selected image selected although its row moved.
+        app.search_query.clear();
+        app.apply_search(false).await;
+        assert_eq!(app.selected_hash(), Some(office.clone()));
+        assert_eq!(app.scroll_list.selected(), Some(2));
+
+        // Another process captions an image: the next poll picks it up.
+        app.search_query = "moon".into();
+        app.apply_search(true).await;
+        assert_eq!(app.selected_hash(), Some(moon.clone()));
+        app.search_query = "walks".into();
+        app.apply_search(true).await;
+        assert_eq!(names(&app), ["office"]);
+        let _ = lib.set_caption(&moon, caption("a boss walks by")).await.unwrap();
+        app.refresh_if_changed().await;
+        assert_eq!(names(&app), ["moon baby", "office"], "ties keep library order, newest first");
+        assert_eq!(app.selected_hash(), Some(office), "a refresh keeps the image selected as rows move");
+        assert_eq!(app.scroll_list.selected(), Some(1));
+        assert_eq!(app.seq, lib.head().await.unwrap());
+    }
+
+    #[test]
+    fn snippets_render_matches_between_cuts() {
+        let snippet = Snippet {
+            leading_cut: true,
+            segments: vec![
+                Segment { text: "the ".into(), matched: false },
+                Segment { text: "moon".into(), matched: true },
+            ],
+            trailing_cut: true,
+        };
+        let spans = snippet_spans(&snippet);
+        assert_eq!(spans.iter().map(|s| s.content.as_ref()).collect::<String>(), "…the moon…");
+        assert_ne!(spans[1].style, spans[2].style, "matched words stand out");
     }
 }

@@ -8,7 +8,10 @@ use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
-use crate::error::{Error, InvalidInput, Result};
+use crate::{
+    caption::Reading,
+    error::{Error, InvalidInput, Result},
+};
 
 /// The image formats Kura stores, detected from file contents.
 pub type MediaType = MimeType;
@@ -304,6 +307,8 @@ pub struct Image {
     pub(crate) created_at: Timestamp,
     /// Sorted.
     pub(crate) tags: Vec<Tag>,
+    /// The manual caption if there is one, else the ocr one.
+    pub(crate) reading: Option<Reading>,
 }
 
 impl Image {
@@ -326,6 +331,12 @@ impl Image {
 
     pub fn tags(&self) -> &[Tag] {
         &self.tags
+    }
+
+    /// The effective caption (manual over ocr). `None` means not read yet; a
+    /// reading whose outcome is `Blank` means read and found no text.
+    pub fn caption(&self) -> Option<&Reading> {
+        self.reading.as_ref()
     }
 }
 
@@ -405,7 +416,7 @@ impl Added {
     }
 }
 
-/// Result of an idempotent edit (rename, tag, untag): the image afterwards, and
+/// Result of an idempotent edit (rename, tag, untag, caption): the image afterwards, and
 /// whether anything changed. Unchanged edits write nothing.
 #[derive(Debug, Clone)]
 #[must_use]

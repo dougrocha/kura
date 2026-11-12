@@ -60,6 +60,8 @@ kura-core = { workspace = true }
 kura-server = { workspace = true }
 image = { workspace = true }
 miette = { workspace = true }
-nucleo-matcher = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

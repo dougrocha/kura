@@ -57,6 +57,21 @@ pub enum Commands {
     Untag { image: ImageRef, tag: Tag },
     /// Rename an image
     Rename { image: ImageRef, new_name: ImageName },
+    /// Show or set the text written inside an image (searched along with names and tags)
+    Caption {
+        image: ImageRef,
+        /// Set this as the caption. It wins over the text the Mac app read
+        text: Option<String>,
+        /// Say there is no text in this image, so it isn't read again
+        #[arg(long, conflicts_with_all = ["text", "clear", "reread"])]
+        none: bool,
+        /// Drop the caption you set and use the text the Mac app read
+        #[arg(long, conflicts_with_all = ["text", "none", "reread"])]
+        clear: bool,
+        /// Drop the text the Mac app read, so it reads the image again
+        #[arg(long, conflicts_with_all = ["text", "none", "clear"])]
+        reread: bool,
+    },
     /// Browse the library in the terminal
     Tui,
     /// Fuzzy pick an image, copy it, and exit
@@ -71,4 +86,23 @@ pub enum Commands {
     Nuke,
     /// Serve the library over HTTP
     Serve(ServeArgs),
+    /// Show or change settings (shared with the Mac app)
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Print one setting's value
+    Get { key: String },
+    /// Change a setting: `kura config set pick.close_after_copy false`
+    Set { key: String, value: String },
+    /// Put a setting back to its default
+    Unset { key: String },
+    /// Open the config file in $VISUAL or $EDITOR
+    Edit,
+    /// Print the config file's path
+    Path,
 }

@@ -12,6 +12,7 @@ hako = { workspace = true, default-features = false }
 hex = { workspace = true }
 image = { workspace = true }
 jiff = { workspace = true }
+nucleo-matcher = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -19,6 +20,7 @@ sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+toml_edit = "0.25.19"
 
 [dev-dependencies]
 tempfile = { workspace = true }

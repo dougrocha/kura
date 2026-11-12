@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kura_core::LibraryPaths;
+use kura_core::{ConfigFile, LibraryPaths};
 use kura_server::ServeArgs;
 
 #[derive(Parser)]
@@ -22,5 +22,6 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
-    kura_server::run(LibraryPaths::resolve(args.library.as_deref())?, args.serve).await
+    let config = ConfigFile::locate()?.load()?;
+    kura_server::run(LibraryPaths::resolve(args.library.as_deref(), &config)?, args.serve).await
 }

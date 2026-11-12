@@ -9,12 +9,12 @@ use axum::{
         IntoResponse, Redirect, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures::{Stream, StreamExt};
 use kura_core::{
-    Added, ChangeSeq, FetchPolicy, HttpUrl, ImageFilter, ImageName, ImageRef, Library, NewName, Source, Tag, ThumbSize,
-    WatchEvent, parse_created_at,
+    Added, CaptionEdit, CaptionSource, CaptionText, ChangeSeq, Engine, FetchPolicy, HttpUrl, ImageFilter, ImageName,
+    ImageRef, InvalidInput, Library, NewName, SearchQuery, Source, Tag, ThumbSize, WatchEvent, parse_created_at,
 };
 use tokio_util::io::ReaderStream;
 
@@ -34,6 +34,8 @@ pub(crate) fn router() -> Router<Library> {
         .route("/images/{id}/thumbnail", get(image_thumbnail))
         .route("/images/{id}/tags", post(add_tag))
         .route("/images/{id}/tags/{tag}", delete(remove_tag))
+        .route("/images/{id}/captions/{source}", put(put_caption).delete(clear_caption))
+        .route("/search", get(search))
         .route("/tags", get(list_tags))
         .route("/events", get(events))
         .fallback(extract::no_route)
@@ -157,6 +159,47 @@ async fn remove_tag(
     let id: ImageRef = id.parse()?;
     let edited = lib.untag(id, &Tag::parse(&tag)?).await?;
     Ok(image_json(&edited.image))
+}
+
+/// Any text is a valid query, so this only fails if the library does.
+async fn search(
+    State(lib): State<Library>,
+    Query(q): Query<wire::SearchQuery>,
+) -> ApiResult<Json<wire::SearchResponse>> {
+    let results = lib.search(&SearchQuery::parse(&q.q)).await?;
+    Ok(Json((&results).into()))
+}
+
+/// Idempotent: 200 with the image whether or not anything changed.
+async fn put_caption(
+    State(lib): State<Library>,
+    Path((id, source)): Path<(String, String)>,
+    JsonBody(body): JsonBody<wire::CaptionBody>,
+) -> ApiResult<Json<wire::Image>> {
+    let id: ImageRef = id.parse()?;
+    let outcome = CaptionText::normalize(&body.text);
+    let edit = match (source.parse::<CaptionSource>()?, body.engine.as_deref()) {
+        (CaptionSource::Ocr, Some(engine)) => CaptionEdit::Ocr { outcome, engine: Engine::parse(engine)? },
+        (CaptionSource::Ocr, None) => return Err(engine_error("required for an ocr caption")),
+        (CaptionSource::Manual, None) => CaptionEdit::Manual(outcome),
+        (CaptionSource::Manual, Some(_)) => return Err(engine_error("not allowed for a manual caption")),
+    };
+    Ok(image_json(&lib.set_caption(id, edit).await?.image))
+}
+
+fn engine_error(reason: &str) -> ApiError {
+    InvalidInput { field: "engine", reason: reason.to_owned() }.into()
+}
+
+/// Idempotent. Clearing `ocr` makes the image "not read yet" again (unless it
+/// has a manual caption); clearing `manual` falls back to what ocr read.
+async fn clear_caption(
+    State(lib): State<Library>,
+    Path((id, source)): Path<(String, String)>,
+) -> ApiResult<Json<wire::Image>> {
+    let id: ImageRef = id.parse()?;
+    let edit = CaptionEdit::Clear(source.parse()?);
+    Ok(image_json(&lib.set_caption(id, edit).await?.image))
 }
 
 async fn list_tags(State(lib): State<Library>) -> ApiResult<Json<Vec<wire::TagCount>>> {

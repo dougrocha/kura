@@ -20,13 +20,18 @@ const BATCH: i64 = 100;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChangeSeq(pub u64);
 
+/// What an edit was. Not exhaustive: match with a `_` arm, since new kinds
+/// arrive (an older reader skips a kind it doesn't know instead of failing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChangeKind {
     Added,
     Renamed,
     Tagged,
     Untagged,
     Deleted,
+    /// A caption row was written or cleared.
+    Captioned,
 }
 
 impl ChangeKind {
@@ -37,6 +42,7 @@ impl ChangeKind {
             Self::Tagged => "tagged",
             Self::Untagged => "untagged",
             Self::Deleted => "deleted",
+            Self::Captioned => "captioned",
         }
     }
 
@@ -47,6 +53,7 @@ impl ChangeKind {
             "tagged" => Self::Tagged,
             "untagged" => Self::Untagged,
             "deleted" => Self::Deleted,
+            "captioned" => Self::Captioned,
             _ => return None,
         })
     }
@@ -58,8 +65,9 @@ pub struct Change {
     pub seq: ChangeSeq,
     pub kind: ChangeKind,
     pub image: ImageHash,
-    /// The new name (added, renamed), the tag (tagged, untagged), or the old
-    /// name (deleted).
+    /// The new name (added, renamed), the tag (tagged, untagged), the old
+    /// name (deleted), or `ocr`, `manual`, `cleared:ocr`, `cleared:manual`
+    /// (captioned, never the text itself).
     pub detail: Option<String>,
     pub at: Timestamp,
 }
@@ -125,9 +133,9 @@ pub(crate) async fn watch(
             // Mark before reading, so a commit that lands during the read still wakes us.
             st.wake.mark_unchanged();
             match st.store.changes_after(st.after, BATCH).await {
-                Ok(batch) if !batch.is_empty() => {
-                    st.after = batch.last().map_or(st.after, |c| c.seq.0);
-                    st.pending.extend(batch.into_iter().map(WatchEvent::Change));
+                Ok(batch) if batch.through > st.after => {
+                    st.after = batch.through;
+                    st.pending.extend(batch.changes.into_iter().map(WatchEvent::Change));
                 }
                 Ok(_) => {
                     let _ = tokio::time::timeout(POLL_INTERVAL, st.wake.changed()).await;

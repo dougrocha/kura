@@ -24,10 +24,12 @@ use futures::Stream;
 use jiff::Timestamp;
 
 use crate::{
+    caption::{CaptionEdit, CaptionSource},
     changes::{self, ChangeKind, ChangeSeq, WatchEvent},
     error::{Error, Result, ResultExt},
     health::{self, Findings, Health, KEEP_CHANGES, STALE_STAGING},
     model::{Added, Edited, Image, ImageFilter, ImageHash, ImageName, ImageRef, MediaType, NewName, Tag, TagCount},
+    search::{SearchCache, SearchQuery, SearchResults},
     source::Source,
     store::{
         Query, Store,
@@ -71,9 +73,10 @@ impl LibraryPaths {
         Self { pictures: root.join("pictures"), data: root.join("data"), cache: root.join("cache") }
     }
 
-    /// What every binary's `--library` flag means: a folder, or the user's default library.
-    pub fn resolve(library: Option<&Path>) -> Result<Self> {
-        library.map_or_else(Self::for_current_user, |root| Ok(Self::under(root)))
+    /// Which library a binary opens: its `--library` flag, else the config
+    /// file's `library`, else the user's default library.
+    pub fn resolve(library: Option<&Path>, config: &crate::Config) -> Result<Self> {
+        library.or(config.library.as_deref()).map_or_else(Self::for_current_user, |root| Ok(Self::under(root)))
     }
 
     /// Delete the whole library (images, database, thumbnails) without opening it.
@@ -116,6 +119,7 @@ struct Inner {
     layout: Layout,
     thumbs: Thumbs,
     limits: Limits,
+    search_cache: SearchCache,
     _lock: LockGuard,
 }
 
@@ -172,7 +176,9 @@ impl Library {
         layout.clear_stale_staging(STALE_STAGING).await?;
         let thumbs = Thumbs::open(paths.cache).await?;
 
-        Ok(Self { inner: Arc::new(Inner { store, layout, thumbs, limits, _lock: lock }) })
+        Ok(Self {
+            inner: Arc::new(Inner { store, layout, thumbs, limits, search_cache: SearchCache::new(), _lock: lock }),
+        })
     }
 
     pub fn limits(&self) -> Limits {
@@ -190,6 +196,16 @@ impl Library {
     pub async fn list(&self, filter: &ImageFilter) -> Result<Vec<Image>> {
         let tag = filter.tag.as_ref().map(Tag::as_str);
         self.inner.store.images(Query { tag, ..Query::default() }).await
+    }
+
+    /// Search names, tags and captions; see [`SearchQuery`] for the rules. Always
+    /// reflects every committed write, including other processes'. The first
+    /// search after a change rebuilds an in-memory snapshot of the library (one
+    /// pass); the ones after it cost one small read plus the match.
+    pub async fn search(&self, query: &SearchQuery) -> Result<SearchResults> {
+        let index = self.inner.search_cache.fresh(&self.inner.store).await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || index.query(&query)).await.internal("searching")
     }
 
     /// One image by hash or name (names ignore case).
@@ -340,7 +356,40 @@ impl Library {
         Ok(image)
     }
 
+    /// Write, replace or clear a caption. Writing what is stored changes nothing.
+    ///
+    /// The ocr and manual rows are independent: an ocr write never touches the
+    /// manual one, and clearing manual falls back to ocr. Captioning an image
+    /// that doesn't exist is `NotFound`.
+    pub async fn set_caption(&self, id: impl Into<ImageRef>, edit: CaptionEdit) -> Result<Edited> {
+        let id = id.into();
+        let mut tx = self.inner.store.begin_write().await?;
+        let image = tx.resolve(&id).await?;
+        let (changed, detail) = match &edit {
+            CaptionEdit::Ocr { outcome, engine } => {
+                (tx.put_caption(&image.hash, CaptionSource::Ocr, outcome, Some(engine)).await?, "ocr".to_owned())
+            }
+            CaptionEdit::Manual(outcome) => {
+                (tx.put_caption(&image.hash, CaptionSource::Manual, outcome, None).await?, "manual".to_owned())
+            }
+            CaptionEdit::Clear(source) => (tx.delete_caption(&image.hash, *source).await?, format!("cleared:{source}")),
+        };
+        if !changed {
+            return Ok(Edited { image, changed: false });
+        }
+        tx.record(ChangeKind::Captioned, &image.hash, Some(&detail)).await?;
+        tx.commit().await?;
+        Ok(Edited { image: self.image(&image.hash).await?, changed: true })
+    }
+
     // ---------------------------------------------------------------- changes
+
+    /// Where the change log is now: the seq of the newest edit, 0 for none. One
+    /// cheap read, for a client that holds its own copy of the data and wants to
+    /// know whether it is current.
+    pub async fn head(&self) -> Result<ChangeSeq> {
+        self.inner.store.head_seq().await
+    }
 
     /// Every edit after `since`, then each new one as it's committed, forever.
     /// `None` starts after the newest edit committed when this is called.

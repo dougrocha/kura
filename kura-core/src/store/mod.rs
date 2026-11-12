@@ -5,7 +5,10 @@
 pub(crate) mod files;
 pub(crate) mod upgrade;
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Mutex, PoisonError},
+};
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use sqlx::{
@@ -14,6 +17,7 @@ use sqlx::{
 };
 
 use crate::{
+    caption::{CaptionSource, Engine, Outcome, Reading},
     changes::{Change, ChangeKind, ChangeSeq, Notifier},
     error::{Error, Result, ResultExt, internal},
     model::{Image, ImageHash, ImageName, ImageRef, Tag, TagCount},
@@ -23,6 +27,23 @@ use crate::{
 pub(crate) struct Store {
     pool: SqlitePool,
     notifier: Notifier,
+}
+
+/// Changes read by `changes_after`, and the last seq looked at, which is
+/// past `changes` when trailing rows were skipped.
+pub(crate) struct ChangeBatch {
+    pub(crate) changes: Vec<Change>,
+    pub(crate) through: u64,
+}
+
+/// Say once per kind that a change row is being skipped.
+fn note_skipped_kind(kind: &str) {
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if !seen.iter().any(|k| k == kind) {
+        eprintln!("kura: skipping change kind '{kind}' written by a newer version");
+        seen.push(kind.to_owned());
+    }
 }
 
 /// Narrows the one image query. All `None` means every image.
@@ -48,17 +69,31 @@ struct ImageRow {
     extension: String,
     created_at: String,
     tags: String,
+    caption_source: Option<String>,
+    caption_engine: Option<String>,
+    caption_text: Option<String>,
 }
 
 impl ImageRow {
     fn into_image(self) -> Result<Image> {
         let tags: Vec<String> = serde_json::from_str(&self.tags).internal("decoding tags")?;
+        let reading = match (self.caption_source.as_deref(), self.caption_text, self.caption_engine) {
+            (None, ..) => None,
+            (Some("ocr"), Some(text), Some(engine)) => {
+                Some(Reading::Ocr { engine: Engine::from_row(engine), outcome: Outcome::from_row(text) })
+            }
+            (Some("manual"), Some(text), None) => Some(Reading::Manual { outcome: Outcome::from_row(text) }),
+            (Some(source), ..) => {
+                return Err(internal("decoding caption", format!("malformed '{source}' caption row")));
+            }
+        };
         Ok(Image {
             hash: ImageHash::from_row(self.hash),
             name: ImageName::from_row(self.name),
             extension: self.extension,
             created_at: parse_sqlite_time(&self.created_at)?,
             tags: tags.into_iter().map(Tag::from_row).collect(),
+            reading,
         })
     }
 }
@@ -70,14 +105,19 @@ fn parse_sqlite_time(s: &str) -> Result<Timestamp> {
 }
 
 /// The one image query, shared by every read. Tags come back as a JSON array.
+/// The caption is merged here, once: the manual row if there is one, else the ocr row.
 async fn select_images(executor: impl SqliteExecutor<'_>, q: Query<'_>) -> Result<Vec<Image>> {
     sqlx::query_as!(
         ImageRow,
         r#"SELECT i.hash AS "hash!", i.name AS "name!", i.extension AS "extension!",
                   i.created_at AS "created_at!",
                   (SELECT json_group_array(tag)
-                   FROM (SELECT tag FROM tags WHERE image_hash = i.hash ORDER BY tag)) AS "tags!: String"
+                   FROM (SELECT tag FROM tags WHERE image_hash = i.hash ORDER BY tag)) AS "tags!: String",
+                  c.source AS "caption_source?", c.engine AS "caption_engine?", c.text AS "caption_text?"
            FROM images i
+           LEFT JOIN captions c
+             ON c.image_hash = i.hash
+            AND c.source = (SELECT source FROM captions WHERE image_hash = i.hash ORDER BY source = 'manual' DESC LIMIT 1)
            WHERE (?1 IS NULL OR i.hash = ?1)
              AND (?2 IS NULL OR i.name = ?2 COLLATE NOCASE)
              AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.image_hash = i.hash AND t.tag = ?3))
@@ -142,31 +182,50 @@ impl Store {
         Ok(WriteTx { tx, notifier: self.notifier.clone() })
     }
 
-    pub(crate) async fn changes_after(&self, after: u64, limit: i64) -> Result<Vec<Change>> {
-        let after = i64::try_from(after).unwrap_or(i64::MAX);
+    /// Changes after `after`, oldest first. A kind this version doesn't know
+    /// (written by a newer one) is skipped, so a feed never stalls on it, and
+    /// `through` still moves past it.
+    pub(crate) async fn changes_after(&self, after: u64, limit: i64) -> Result<ChangeBatch> {
+        let after_i = i64::try_from(after).unwrap_or(i64::MAX);
         let rows = sqlx::query!(
             r#"SELECT seq AS "seq!: i64", kind AS "kind!", image_hash AS "image_hash!", detail,
                       created_at AS "created_at!"
                FROM changes WHERE seq > ? ORDER BY seq LIMIT ?"#,
-            after,
+            after_i,
             limit
         )
         .fetch_all(&self.pool)
         .await
         .internal("loading changes")?;
-        rows.into_iter()
-            .map(|r| {
-                let kind = ChangeKind::parse(&r.kind)
-                    .ok_or_else(|| internal("loading changes", format!("unknown change kind '{}'", r.kind)))?;
-                Ok(Change {
-                    seq: ChangeSeq(r.seq.unsigned_abs()),
-                    kind,
-                    image: ImageHash::from_row(r.image_hash),
-                    detail: r.detail,
-                    at: parse_sqlite_time(&r.created_at)?,
-                })
-            })
-            .collect()
+
+        let mut batch = ChangeBatch { changes: Vec::with_capacity(rows.len()), through: after };
+        for r in rows {
+            let seq = r.seq.unsigned_abs();
+            batch.through = batch.through.max(seq);
+            let Some(kind) = ChangeKind::parse(&r.kind) else {
+                note_skipped_kind(&r.kind);
+                continue;
+            };
+            batch.changes.push(Change {
+                seq: ChangeSeq(seq),
+                kind,
+                image: ImageHash::from_row(r.image_hash),
+                detail: r.detail,
+                at: parse_sqlite_time(&r.created_at)?,
+            });
+        }
+        Ok(batch)
+    }
+
+    /// The newest change seq ever written, 0 for none. One indexed read.
+    pub(crate) async fn head_seq(&self) -> Result<ChangeSeq> {
+        let seq = sqlx::query_scalar!(
+            r#"SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'changes'), 0) AS "seq!: i64""#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .internal("loading changes")?;
+        Ok(ChangeSeq(seq.unsigned_abs()))
     }
 
     /// The oldest seq still in the log (if any) and the newest ever written (0 if none).
@@ -312,6 +371,43 @@ impl WriteTx {
         .await
         .internal("checking image")?;
         Ok(referenced)
+    }
+
+    /// Write one source's caption row. Returns whether anything changed: an
+    /// identical row is left alone, so the caller records no change.
+    pub(crate) async fn put_caption(
+        &mut self,
+        hash: &ImageHash,
+        source: CaptionSource,
+        outcome: &Outcome,
+        engine: Option<&Engine>,
+    ) -> Result<bool> {
+        let (hash_str, source_str, text, engine) =
+            (hash.as_str(), source.as_str(), outcome.text(), engine.map(Engine::as_str));
+        let result = sqlx::query!(
+            "INSERT INTO captions (image_hash, source, text, engine) VALUES (?, ?, ?, ?)
+             ON CONFLICT(image_hash, source) DO UPDATE
+                SET text = excluded.text, engine = excluded.engine, updated_at = datetime('now')
+                WHERE captions.text IS NOT excluded.text OR captions.engine IS NOT excluded.engine",
+            hash_str,
+            source_str,
+            text,
+            engine
+        )
+        .execute(&mut *self.tx)
+        .await
+        .internal("writing caption")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Returns whether the image had a caption from `source`.
+    pub(crate) async fn delete_caption(&mut self, hash: &ImageHash, source: CaptionSource) -> Result<bool> {
+        let (hash_str, source_str) = (hash.as_str(), source.as_str());
+        let result = sqlx::query!("DELETE FROM captions WHERE image_hash = ? AND source = ?", hash_str, source_str)
+            .execute(&mut *self.tx)
+            .await
+            .internal("clearing caption")?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Append to the change log, in this transaction.

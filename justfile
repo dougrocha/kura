@@ -12,6 +12,8 @@ env := env("KURA_ENV", "dev")
 bind := env("KURA_BIND", "127.0.0.1:7878")
 dev_library := justfile_directory() / ".kura-dev"
 library_path := if env == "dev" { dev_library } else { "" }
+# dev keeps its own config, so `kura config set` there never touches yours.
+export KURA_CONFIG := if env == "dev" { dev_library / "config.toml" } else { env("KURA_CONFIG", "") }
 
 library_flag := if env == "dev" { "--library '" + dev_library + "'" } else if env == "prod" { "" } else { error("KURA_ENV must be dev or prod, not '" + env + "'") }
 profile_flag := if env == "prod" { "--release" } else { "" }
@@ -59,12 +61,15 @@ bundle:
 
 # Build and open Kura.app on this environment's library
 app: bundle
-    open -n {{ if env == "dev" { "--env KURA_LIBRARY='" + dev_library + "' " } else { "" } }}mac/build/Kura.app
+    open -n {{ if env == "dev" { "--env KURA_LIBRARY='" + dev_library + "' --env KURA_CONFIG='" + dev_library / "config.toml" + "' " } else { "" } }}mac/build/Kura.app
 
 # Install Kura.app into /Applications (your real library, like any app)
 install: bundle
+    @# Copy beside the old app, then swap: a running Kura never sees half a bundle.
+    rm -rf /Applications/.Kura.app.new
+    cp -R mac/build/Kura.app /Applications/.Kura.app.new
     rm -rf /Applications/Kura.app
-    cp -R mac/build/Kura.app /Applications/
+    mv /Applications/.Kura.app.new /Applications/Kura.app
     @echo "Installed /Applications/Kura.app"
 
 # Open the Mac app in Xcode (set KURA_BIN in the scheme's environment, or run `just bundle`)
@@ -90,7 +95,8 @@ test *args:
 
 # The Mac app's tests (search, clipboard)
 mac-test:
-    swift test --package-path mac
+    cargo build {{profile_flag}} -q -p kura-server --bin kura-server
+    KURA_BIN="{{justfile_directory()}}/target/{{target_dir}}/kura-server" swift test --package-path mac
 
 # Formatting and clippy
 lint:

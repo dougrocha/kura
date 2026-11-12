@@ -1,14 +1,16 @@
 mod cli;
 mod image_protocol_cache;
-mod search;
 mod tui;
 
 use clap::{CommandFactory, Parser};
-use kura_core::{Added, FetchPolicy, HttpUrl, ImageFilter, ImageHash, ImageRef, Library, LibraryPaths, Source};
+use kura_core::{
+    Added, CaptionEdit, CaptionSource, CaptionText, ConfigFile, FetchPolicy, HttpUrl, ImageFilter, ImageHash, ImageRef,
+    InvalidInput, Library, LibraryPaths, Outcome, Source,
+};
 use miette::{IntoDiagnostic, Result, miette};
 
 use crate::{
-    cli::{Cli, Commands},
+    cli::{Cli, Commands, ConfigAction},
     tui::{KuraApp, Mode},
 };
 
@@ -23,7 +25,13 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
-    let paths = LibraryPaths::resolve(cli.library.as_deref()).into_diagnostic()?;
+    let config_file = ConfigFile::locate().into_diagnostic()?;
+    // Before loading it: `kura config edit` must work on a broken file.
+    if let Commands::Config { action } = command {
+        return config(&config_file, action);
+    }
+    let config = config_file.load().into_diagnostic()?;
+    let paths = LibraryPaths::resolve(cli.library.as_deref(), &config).into_diagnostic()?;
 
     match command {
         Commands::Nuke => paths.destroy().into_diagnostic()?,
@@ -36,7 +44,7 @@ async fn main() -> Result<()> {
             match command {
                 Commands::Tui | Commands::Pick => {
                     let mode = if let Commands::Pick = command { Mode::Pick } else { Mode::Browse };
-                    let app = KuraApp::new(lib, mode).await.into_diagnostic()?;
+                    let app = KuraApp::new(lib, mode, config.close_after_copy).await.into_diagnostic()?;
                     hako::run(app).await.into_diagnostic()?;
                 }
                 command => run(&lib, command).await.into_diagnostic()?,
@@ -112,8 +120,93 @@ async fn run(lib: &Library, command: Commands) -> kura_core::Result<()> {
             let edited = lib.rename(image, new_name).await?;
             println!("Renamed to {}", edited.image.name());
         }
+        Commands::Caption { image, text, none, clear, reread } => {
+            let edit = match (text, none, clear, reread) {
+                (Some(text), ..) => match CaptionText::normalize(&text) {
+                    Outcome::Blank => {
+                        let reason = "can't be empty (use --none to say there is no text)".to_owned();
+                        return Err(InvalidInput { field: "caption", reason }.into());
+                    }
+                    outcome => CaptionEdit::Manual(outcome),
+                },
+                (None, true, ..) => CaptionEdit::Manual(Outcome::Blank),
+                (None, _, true, _) => CaptionEdit::Clear(CaptionSource::Manual),
+                (None, _, _, true) => CaptionEdit::Clear(CaptionSource::Ocr),
+                (None, false, false, false) => {
+                    let image = lib.image(image).await?;
+                    match image.caption().map(kura_core::Reading::outcome) {
+                        None => println!("(not read yet)"),
+                        Some(Outcome::Blank) => println!("(no text)"),
+                        Some(Outcome::Text(text)) => println!("{text}"),
+                    }
+                    return Ok(());
+                }
+            };
+            let edited = lib.set_caption(image, edit).await?;
+            let name = edited.image.name();
+            println!(
+                "{}",
+                if edited.changed {
+                    format!("Updated the caption of {name}")
+                } else {
+                    format!("{name} already has that caption")
+                }
+            );
+        }
         Commands::Doctor { fix } => doctor(lib, fix).await?,
-        Commands::Tui | Commands::Pick | Commands::Nuke | Commands::Serve(_) => unreachable!("handled in main"),
+        Commands::Tui | Commands::Pick | Commands::Nuke | Commands::Serve(_) | Commands::Config { .. } => {
+            unreachable!("handled in main")
+        }
+    }
+    Ok(())
+}
+
+fn config(file: &ConfigFile, action: Option<ConfigAction>) -> Result<()> {
+    match action {
+        None => {
+            println!("{}\n", file.path().display());
+            for key in kura_core::KEYS {
+                let value = file.get(key.name).into_diagnostic()?;
+                let shown = value.unwrap_or_else(|| "(default)".to_owned());
+                println!("{:<26} {:<12} {}", key.name, shown, key.about);
+            }
+            // Catch a broken file here too, not only when a command fails.
+            file.load().into_diagnostic()?;
+        }
+        Some(ConfigAction::Get { key }) => {
+            match file.get(&key).into_diagnostic()? {
+                Some(value) => println!("{value}"),
+                None => println!("(default)"),
+            }
+        }
+        Some(ConfigAction::Set { key, value }) => file.set(&key, &value).into_diagnostic()?,
+        Some(ConfigAction::Unset { key }) => file.unset(&key).into_diagnostic()?,
+        Some(ConfigAction::Path) => println!("{}", file.path().display()),
+        Some(ConfigAction::Edit) => {
+            let path = file.path();
+            if !path.exists() {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir).into_diagnostic()?;
+                }
+                std::fs::write(path, ConfigFile::template()).into_diagnostic()?;
+            }
+            let editor = std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .ok()
+                .filter(|e| !e.trim().is_empty())
+                .unwrap_or_else(|| "vi".to_owned());
+            // Through the shell, so EDITOR="code --wait" works.
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{editor} \"$0\""))
+                .arg(path)
+                .status()
+                .into_diagnostic()?;
+            if !status.success() {
+                return Err(miette!("{editor} exited with {status}"));
+            }
+            file.load().into_diagnostic()?;
+        }
     }
     Ok(())
 }

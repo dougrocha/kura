@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use kura_core::{
-    Added, Change, ChangeKind, ChangeSeq, Error, ImageFilter, ImageHash, ImageName, Library, LibraryPaths, NewName,
-    Source, Tag, ThumbSize, WatchEvent,
+    Added, CaptionEdit, CaptionSource, CaptionText, Change, ChangeKind, ChangeSeq, Engine, Error, ImageFilter,
+    ImageHash, ImageName, Library, LibraryPaths, NewName, Outcome, Reading, SearchQuery, Source, Tag, ThumbSize,
+    WatchEvent,
 };
 
 /// A 4x4 PNG whose pixels depend on `seed`, so different seeds hash differently.
@@ -418,4 +419,185 @@ async fn add_keeps_a_given_created_at() {
 
     assert!(kura_core::parse_created_at("yesterday").is_err());
     assert!(kura_core::parse_created_at("2999-01-01T00:00:00Z").is_err());
+}
+
+fn ocr(text: &str) -> CaptionEdit {
+    CaptionEdit::Ocr { outcome: CaptionText::normalize(text), engine: Engine::parse("vision:1").unwrap() }
+}
+
+fn manual(text: &str) -> CaptionEdit {
+    CaptionEdit::Manual(CaptionText::normalize(text))
+}
+
+async fn add_named(lib: &Library, seed: u8, label: &str) -> ImageHash {
+    lib.add(Source::bytes(png_bytes(seed, false), None), name(label), &[], None).await.unwrap().image().hash().clone()
+}
+
+fn caption_text(lib_image: &kura_core::Image) -> Option<(&'static str, String)> {
+    lib_image.caption().map(|r| (r.source().as_str(), r.outcome().text().to_owned()))
+}
+
+#[tokio::test]
+async fn captions_are_idempotent_and_manual_wins_over_ocr() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+    let hash = add_named(&lib, 1, "cat").await;
+    assert!(lib.image(&hash).await.unwrap().caption().is_none(), "not read yet");
+
+    let first = lib.set_caption(&hash, ocr("WHEN THE\nMOON  HITS")).await.unwrap();
+    assert!(first.changed);
+    assert_eq!(caption_text(&first.image), Some(("ocr", "WHEN THE MOON HITS".to_owned())));
+    assert!(matches!(first.image.caption(), Some(Reading::Ocr { engine, .. }) if engine.as_str() == "vision:1"));
+    assert!(!lib.set_caption(&hash, ocr("WHEN THE MOON HITS")).await.unwrap().changed, "same text, same engine");
+    assert!(
+        lib.set_caption(
+            &hash,
+            CaptionEdit::Ocr {
+                outcome: CaptionText::normalize("WHEN THE MOON HITS"),
+                engine: Engine::parse("vision:2").unwrap(),
+            }
+        )
+        .await
+        .unwrap()
+        .changed,
+        "a new engine rewrites the row"
+    );
+
+    // A person's caption wins, and an ocr re-run can't take it back.
+    assert_eq!(
+        caption_text(&lib.set_caption(&hash, manual("the moon")).await.unwrap().image),
+        Some(("manual", "the moon".into()))
+    );
+    assert_eq!(
+        caption_text(&lib.set_caption(&hash, ocr("something else")).await.unwrap().image),
+        Some(("manual", "the moon".into()))
+    );
+    assert!(!lib.set_caption(&hash, manual("the moon")).await.unwrap().changed);
+
+    // Clearing manual falls back to ocr; clearing what isn't there is a no-op.
+    let cleared = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Manual)).await.unwrap();
+    assert_eq!(caption_text(&cleared.image), Some(("ocr", "something else".into())));
+    assert!(!lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Manual)).await.unwrap().changed);
+
+    // "Read, no text" is a value; clearing ocr makes the image unread again.
+    let blank = lib.set_caption(&hash, ocr("  \n ")).await.unwrap();
+    assert_eq!(blank.image.caption().unwrap().outcome(), &Outcome::Blank);
+    let unread = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Ocr)).await.unwrap();
+    assert!(unread.image.caption().is_none());
+
+    let missing = lib.set_caption(ImageHash::of_bytes(b"nothing"), manual("x")).await;
+    assert!(matches!(missing, Err(Error::NotFound(_))));
+}
+
+#[tokio::test]
+async fn captions_stream_as_changes_without_their_text_and_die_with_the_image() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+    let hash = add_named(&lib, 1, "cat").await;
+
+    let mut feed = Box::pin(lib.watch(None).await.unwrap());
+    let _ = lib.set_caption(&hash, ocr("secret words")).await.unwrap();
+    let _ = lib.set_caption(&hash, manual("more words")).await.unwrap();
+    let _ = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Manual)).await.unwrap();
+    let _ = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Manual)).await.unwrap();
+    let _ = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Ocr)).await.unwrap();
+
+    let mut seen = vec![];
+    for _ in 0..4 {
+        let c = change(next_change(&mut feed).await);
+        assert_eq!((c.kind, &c.image), (ChangeKind::Captioned, &hash));
+        seen.push(c.detail.unwrap());
+    }
+    assert_eq!(seen, ["ocr", "manual", "cleared:manual", "cleared:ocr"]);
+
+    let _ = lib.set_caption(&hash, manual("gone soon")).await.unwrap();
+    lib.delete(&hash).await.unwrap();
+    assert!(lib.search(&SearchQuery::parse("gone")).await.unwrap().hits.is_empty());
+}
+
+#[tokio::test]
+async fn watch_skips_change_kinds_it_does_not_know() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+    let hash = add_named(&lib, 1, "cat").await;
+    let mut feed = Box::pin(lib.watch(None).await.unwrap());
+
+    // What a newer version would leave in the log.
+    let db = tmp.path().join("library/data/kura.db");
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(db);
+    let mut conn = sqlx::ConnectOptions::connect(&options).await.unwrap();
+    sqlx::query("INSERT INTO changes (kind, image_hash, detail) VALUES ('from_the_future', ?, NULL)")
+        .bind(hash.as_str())
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let _ = lib.rename(&hash, name("dog")).await.unwrap();
+    let event = change(next_change(&mut feed).await);
+    assert_eq!((event.kind, event.detail.as_deref()), (ChangeKind::Renamed, Some("dog")));
+}
+
+#[tokio::test]
+async fn search_is_fresh_after_every_kind_of_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+    let found = |q: &'static str| {
+        let lib = lib.clone();
+        async move { lib.search(&SearchQuery::parse(q)).await.unwrap().hits.len() }
+    };
+
+    let hash = add_named(&lib, 1, "cat").await;
+    assert_eq!(found("cat").await, 1);
+    let _ = lib.rename(&hash, name("walrus")).await.unwrap();
+    assert_eq!((found("cat").await, found("walrus").await), (0, 1));
+    let _ = lib.tag(&hash, &[tag("reaction")]).await.unwrap();
+    assert_eq!(found("#reaction").await, 1);
+    let _ = lib.untag(&hash, &tag("reaction")).await.unwrap();
+    assert_eq!(found("#reaction").await, 0);
+
+    assert_eq!(found("moon").await, 0);
+    let _ = lib.set_caption(&hash, ocr("WHEN THE MOON HITS")).await.unwrap();
+    assert_eq!(found("moon").await, 1);
+    let _ = lib.set_caption(&hash, manual("sun")).await.unwrap();
+    assert_eq!((found("moon").await, found("sun").await), (0, 1));
+    let _ = lib.set_caption(&hash, CaptionEdit::Clear(CaptionSource::Manual)).await.unwrap();
+    assert_eq!(found("moon").await, 1);
+
+    let results = lib.search(&SearchQuery::parse("")).await.unwrap();
+    assert_eq!(results.seq, lib.head().await.unwrap());
+    lib.delete(&hash).await.unwrap();
+    let results = lib.search(&SearchQuery::parse("walrus")).await.unwrap();
+    assert!(results.hits.is_empty());
+    assert_eq!((results.coverage.images, results.coverage.unread), (0, 0));
+}
+
+#[tokio::test]
+async fn search_sees_writes_from_another_handle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tui = open(tmp.path()).await;
+    let server = open(tmp.path()).await;
+
+    let hash = add_named(&server, 1, "cat").await;
+    assert_eq!(tui.search(&SearchQuery::parse("moon")).await.unwrap().coverage.unread, 1);
+    let _ = server.set_caption(&hash, ocr("full moon")).await.unwrap();
+
+    let results = tui.search(&SearchQuery::parse("moon")).await.unwrap();
+    assert_eq!(results.hits.len(), 1);
+    assert_eq!(results.coverage.unread, 0);
+    assert_eq!(results.seq, tui.head().await.unwrap());
+    assert!(results.hits[0].snippet().is_some());
+}
+
+#[tokio::test]
+async fn search_ranks_names_above_captions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = open(tmp.path()).await;
+    let office = add_named(&lib, 1, "office").await;
+    add_named(&lib, 2, "moon baby").await;
+    let _ = lib.set_caption(&office, manual("the moon again")).await.unwrap();
+
+    let results = lib.search(&SearchQuery::parse("moon")).await.unwrap();
+    let names: Vec<_> = results.hits.iter().map(|h| h.image().name().as_str()).collect();
+    assert_eq!(names, ["moon baby", "office"]);
+    assert!(results.hits[0].snippet().is_none() && results.hits[1].snippet().is_some());
 }
