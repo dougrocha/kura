@@ -173,23 +173,16 @@ fn config(file: &ConfigFile, action: Option<ConfigAction>) -> Result<()> {
             // Catch a broken file here too, not only when a command fails.
             file.load().into_diagnostic()?;
         }
-        Some(ConfigAction::Get { key }) => {
-            match file.get(&key).into_diagnostic()? {
-                Some(value) => println!("{value}"),
-                None => println!("(default)"),
-            }
-        }
+        Some(ConfigAction::Get { key }) => match file.get(&key).into_diagnostic()? {
+            Some(value) => println!("{value}"),
+            None => println!("(default)"),
+        },
         Some(ConfigAction::Set { key, value }) => file.set(&key, &value).into_diagnostic()?,
         Some(ConfigAction::Unset { key }) => file.unset(&key).into_diagnostic()?,
         Some(ConfigAction::Path) => println!("{}", file.path().display()),
         Some(ConfigAction::Edit) => {
+            file.create_template().into_diagnostic()?;
             let path = file.path();
-            if !path.exists() {
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).into_diagnostic()?;
-                }
-                std::fs::write(path, ConfigFile::template()).into_diagnostic()?;
-            }
             let editor = std::env::var("VISUAL")
                 .or_else(|_| std::env::var("EDITOR"))
                 .ok()

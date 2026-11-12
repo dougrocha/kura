@@ -457,11 +457,10 @@ impl App for KuraApp {
             format!("Images {}/{}  /{}  [Esc] clear", self.hits.len(), self.coverage.images, self.search_query)
         };
 
-        let dim = Style::default().fg(Color::DarkGray);
         let footer = if let Some(error) = &self.search_error {
             Line::from(Span::styled(error.as_str(), Style::default().fg(Color::Red)))
         } else if self.coverage.unread > 0 {
-            Line::from(Span::styled(format!("{} not read yet", self.coverage.unread), dim))
+            Line::from(Span::styled(format!("{} not read yet", self.coverage.unread), DIM))
         } else {
             Line::from("")
         };
@@ -534,7 +533,7 @@ impl App for KuraApp {
 
         let tags_text = if let Some(img) = self.selected() {
             let mut spans: Vec<Span> = if img.tags().is_empty() {
-                vec![Span::styled("no tags", dim)]
+                vec![Span::styled("no tags", DIM)]
             } else {
                 img.tags()
                     .iter()
@@ -542,7 +541,7 @@ impl App for KuraApp {
                     .collect()
             };
             if let Some(caption) = caption_text(img) {
-                spans.push(Span::styled(format!("  {caption}"), dim));
+                spans.push(Span::styled(format!("  {caption}"), DIM));
             }
             Line::from(spans)
         } else {
@@ -557,28 +556,29 @@ impl App for KuraApp {
     }
 }
 
+/// Secondary text: hints, tags, caption snippets.
+const DIM: Style = Style::new().fg(Color::DarkGray);
+
 /// A list row: the name, and for a caption hit a dim `· …snippet…` with the
 /// matched words in white.
-fn row(hit: &Hit) -> ListItem<'static> {
-    let name = hit.image().name().to_string();
+fn row(hit: &Hit) -> ListItem<'_> {
+    let name = hit.image().name().as_str();
     match hit.snippet() {
         None => ListItem::new(name),
         Some(snippet) => {
-            let dim = Style::default().fg(Color::DarkGray);
-            let mut spans = vec![Span::raw(name), Span::styled(" · ", dim)];
+            let mut spans = vec![Span::raw(name), Span::styled(" · ", DIM)];
             spans.extend(snippet_spans(snippet));
             ListItem::new(Line::from(spans))
         }
     }
 }
 
-fn snippet_spans(snippet: &Snippet) -> Vec<Span<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
+fn snippet_spans(snippet: &Snippet) -> Vec<Span<'_>> {
     let matched = Style::default().fg(Color::White);
-    let cut = |show: bool| show.then(|| Span::styled("…", dim));
+    let cut = |show: bool| show.then(|| Span::styled("…", DIM));
 
     let mut spans: Vec<Span> = cut(snippet.leading_cut).into_iter().collect();
-    spans.extend(snippet.segments.iter().map(|s| Span::styled(s.text.clone(), if s.matched { matched } else { dim })));
+    spans.extend(snippet.segments.iter().map(|s| Span::styled(s.text.as_str(), if s.matched { matched } else { DIM })));
     spans.extend(cut(snippet.trailing_cut));
     spans
 }

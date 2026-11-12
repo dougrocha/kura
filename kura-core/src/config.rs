@@ -35,7 +35,7 @@ impl Default for Config {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyKind {
+pub(crate) enum KeyKind {
     Path,
     Bool,
 }
@@ -44,7 +44,7 @@ pub enum KeyKind {
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
     pub name: &'static str,
-    pub kind: KeyKind,
+    pub(crate) kind: KeyKind,
     pub about: &'static str,
 }
 
@@ -118,27 +118,28 @@ impl ConfigFile {
     pub fn load(&self) -> Result<Config> {
         let doc = self.document()?;
         let mut config = Config::default();
-        for key in KEYS {
-            let Some(item) = lookup(&doc, key.name) else { continue };
-            let invalid = |message: &str| ConfigError::InvalidValue {
-                key: key.name.to_owned(),
-                message: format!("{message} (in {})", self.path.display()),
-            };
-            match key.name {
-                "library" => {
-                    let raw = item.as_str().ok_or_else(|| invalid("expected a folder path in quotes"))?;
-                    config.library = Some(expand(raw).map_err(|e| invalid(&e))?);
-                }
-                "pick.close_after_copy" => {
-                    config.close_after_copy = item.as_bool().ok_or_else(|| invalid("expected true or false"))?;
-                }
-                "mac.relaunch_when_hidden" => {
-                    config.relaunch_when_hidden = item.as_bool().ok_or_else(|| invalid("expected true or false"))?;
-                }
-                _ => unreachable!("every key in KEYS is handled"),
-            }
+        if let Some(item) = lookup(&doc, "library") {
+            let invalid = |message: &str| self.invalid("library", message);
+            let raw = item.as_str().ok_or_else(|| invalid("expected a folder path in quotes"))?;
+            config.library = Some(expand(raw).map_err(|e| invalid(&e))?);
+        }
+        if let Some(value) = self.bool_at(&doc, "pick.close_after_copy")? {
+            config.close_after_copy = value;
+        }
+        if let Some(value) = self.bool_at(&doc, "mac.relaunch_when_hidden")? {
+            config.relaunch_when_hidden = value;
         }
         Ok(config)
+    }
+
+    fn invalid(&self, key: &str, message: &str) -> ConfigError {
+        ConfigError::InvalidValue { key: key.to_owned(), message: format!("{message} (in {})", self.path.display()) }
+    }
+
+    fn bool_at(&self, doc: &DocumentMut, name: &str) -> Result<Option<bool>> {
+        let Some(item) = lookup(doc, name) else { return Ok(None) };
+        let value = item.as_bool().ok_or_else(|| self.invalid(name, "expected true or false"))?;
+        Ok(Some(value))
     }
 
     /// The value as written in the file (`None` when unset), for `kura config get`.
@@ -201,6 +202,18 @@ impl ConfigFile {
          [pick]\n# close_after_copy = true\n\n\
          [mac]\n# relaunch_when_hidden = true\n"
             .to_owned()
+    }
+
+    /// Create the file from [`ConfigFile::template`] if it doesn't exist yet.
+    pub fn create_template(&self) -> Result<()> {
+        if self.path.exists() {
+            return Ok(());
+        }
+        let doc: DocumentMut = Self::template().parse().map_err(|e: toml_edit::TomlError| ConfigError::Syntax {
+            path: self.path.clone(),
+            message: e.to_string(),
+        })?;
+        self.write(&doc)
     }
 
     fn document(&self) -> Result<DocumentMut> {

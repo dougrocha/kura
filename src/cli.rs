@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use kura_core::{ImageName, ImageRef, Tag, Timestamp, parse_created_at};
 use kura_server::ServeArgs;
 
@@ -58,18 +58,20 @@ pub enum Commands {
     /// Rename an image
     Rename { image: ImageRef, new_name: ImageName },
     /// Show or set the text written inside an image (searched along with names and tags)
+    #[command(group(ArgGroup::new("edit").multiple(false)))]
     Caption {
         image: ImageRef,
         /// Set this as the caption. It wins over the text the Mac app read
+        #[arg(group = "edit")]
         text: Option<String>,
         /// Say there is no text in this image, so it isn't read again
-        #[arg(long, conflicts_with_all = ["text", "clear", "reread"])]
+        #[arg(long, group = "edit")]
         none: bool,
         /// Drop the caption you set and use the text the Mac app read
-        #[arg(long, conflicts_with_all = ["text", "none", "reread"])]
+        #[arg(long, group = "edit")]
         clear: bool,
         /// Drop the text the Mac app read, so it reads the image again
-        #[arg(long, conflicts_with_all = ["text", "none", "clear"])]
+        #[arg(long, group = "edit")]
         reread: bool,
     },
     /// Browse the library in the terminal

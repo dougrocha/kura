@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT i.hash AS \"hash!\", i.name AS \"name!\", i.extension AS \"extension!\",\n                  i.created_at AS \"created_at!\",\n                  (SELECT json_group_array(tag)\n                   FROM (SELECT tag FROM tags WHERE image_hash = i.hash ORDER BY tag)) AS \"tags!: String\",\n                  COALESCE(m.source, o.source) AS \"caption_source?\", COALESCE(m.engine, o.engine) AS \"caption_engine?\",\n                  COALESCE(m.text, o.text) AS \"caption_text?\"\n           FROM images i\n           LEFT JOIN captions m ON m.image_hash = i.hash AND m.source = 'manual'\n           LEFT JOIN captions o ON o.image_hash = i.hash AND o.source = 'ocr' AND m.image_hash IS NULL\n           WHERE (?1 IS NULL OR i.hash = ?1)\n             AND (?2 IS NULL OR i.name = ?2 COLLATE NOCASE)\n             AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.image_hash = i.hash AND t.tag = ?3))\n           ORDER BY i.created_at DESC, i.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "hash!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "extension!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "tags!: String",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "caption_source?",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "caption_engine?",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "caption_text?",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fc4ed2255f4445f7ed72fa0ce358cbf5fc6339b68a2f05ae1967606fabc4651f"
+}

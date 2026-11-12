@@ -30,9 +30,9 @@ mod source;
 mod store;
 mod thumbs;
 
-pub use caption::{CAPTION_MAX_CHARS, CaptionEdit, CaptionSource, CaptionText, Engine, Outcome, Reading};
+pub use caption::{CaptionEdit, CaptionSource, CaptionText, Engine, Outcome, Reading};
 pub use changes::{Change, ChangeKind, ChangeSeq, WatchEvent};
-pub use config::{Config, ConfigError, ConfigFile, KEYS, Key, KeyKind};
+pub use config::{Config, ConfigError, ConfigFile, KEYS, Key};
 pub use error::{Error, ErrorKind, FetchFailure, InvalidInput, Result};
 pub use health::Health;
 pub use library::{ImageFile, Library, LibraryPaths, Limits};

@@ -47,6 +47,12 @@ async fn send(app: &Router, method: Method, uri: &str, body: impl Into<Body>) ->
     Reply { status, headers, body }
 }
 
+/// POST an image and return its hash.
+async fn add_image(app: &Router, query: &str, body: impl Into<Body>) -> String {
+    let reply = send(app, Method::POST, &format!("/images?{query}"), body).await;
+    reply.json()["hash"].as_str().unwrap().to_owned()
+}
+
 #[tokio::test]
 async fn upload_list_tag_rename_delete() {
     let (app, _tmp) = app().await;
@@ -152,8 +158,7 @@ async fn get_with(app: &Router, uri: &str, headers: &[(header::HeaderName, &str)
 async fn files_are_cacheable_and_resumable() {
     let (app, _tmp) = app().await;
     let bytes = png(1);
-    let hash =
-        send(&app, Method::POST, "/images?name=cat", bytes.clone()).await.json()["hash"].as_str().unwrap().to_owned();
+    let hash = add_image(&app, "name=cat", bytes.clone()).await;
     let url = format!("/images/{hash}/file");
     let etag = format!("\"{hash}\"");
 
@@ -242,7 +247,7 @@ async fn events_stream_edits_and_resume_from_last_event_id() {
     assert_eq!(response.headers()[header::CONTENT_TYPE], "text/event-stream");
     let mut live = response.into_body();
 
-    let hash = send(&app, Method::POST, "/images?name=cat", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    let hash = add_image(&app, "name=cat", png(1)).await;
     send(&app, Method::POST, "/images/cat/tags", r#"{"tag":"funny"}"#).await;
 
     let events = read_events(&mut live, 2).await;
@@ -265,7 +270,7 @@ async fn put_caption(app: &Router, id: &str, source: &str, body: Value) -> Reply
 #[tokio::test]
 async fn captions_are_set_cleared_and_idempotent() {
     let (app, _tmp) = app().await;
-    let hash = send(&app, Method::POST, "/images?name=cat", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    let hash = add_image(&app, "name=cat", png(1)).await;
     assert_eq!(send(&app, Method::GET, "/images/cat", Body::empty()).await.json()["caption"], Value::Null);
 
     for _ in 0..2 {
@@ -333,10 +338,8 @@ async fn caption_requests_are_validated() {
 #[tokio::test]
 async fn search_ranks_names_above_captions_and_reports_coverage() {
     let (app, _tmp) = app().await;
-    let office =
-        send(&app, Method::POST, "/images?name=office", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
-    let baby =
-        send(&app, Method::POST, "/images?name=moon%20baby", png(2)).await.json()["hash"].as_str().unwrap().to_owned();
+    let office = add_image(&app, "name=office", png(1)).await;
+    let baby = add_image(&app, "name=moon%20baby", png(2)).await;
     send(&app, Method::POST, "/images?name=unread", png(3)).await;
     put_caption(&app, &office, "ocr", json!({"text": "the moon again", "engine": "vision:1"})).await;
 
@@ -382,7 +385,7 @@ async fn captioned_events_stream_without_the_text() {
     let response = app.clone().oneshot(Request::get("/events").body(Body::empty()).unwrap()).await.unwrap();
     let mut live = response.into_body();
 
-    let hash = send(&app, Method::POST, "/images?name=cat", png(1)).await.json()["hash"].as_str().unwrap().to_owned();
+    let hash = add_image(&app, "name=cat", png(1)).await;
     put_caption(&app, &hash, "ocr", json!({"text": "secret words", "engine": "vision:1"})).await;
     put_caption(&app, &hash, "ocr", json!({"text": "secret words", "engine": "vision:1"})).await;
     send(&app, Method::DELETE, &format!("/images/{hash}/captions/ocr"), Body::empty()).await;

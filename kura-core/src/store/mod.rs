@@ -77,12 +77,20 @@ struct ImageRow {
 impl ImageRow {
     fn into_image(self) -> Result<Image> {
         let tags: Vec<String> = serde_json::from_str(&self.tags).internal("decoding tags")?;
-        let reading = match (self.caption_source.as_deref(), self.caption_text, self.caption_engine) {
+        let source = self
+            .caption_source
+            .as_deref()
+            .map(str::parse::<CaptionSource>)
+            .transpose()
+            .map_err(|e| internal("decoding caption", e.to_string()))?;
+        let reading = match (source, self.caption_text, self.caption_engine) {
             (None, ..) => None,
-            (Some("ocr"), Some(text), Some(engine)) => {
+            (Some(CaptionSource::Ocr), Some(text), Some(engine)) => {
                 Some(Reading::Ocr { engine: Engine::from_row(engine), outcome: Outcome::from_row(text) })
             }
-            (Some("manual"), Some(text), None) => Some(Reading::Manual { outcome: Outcome::from_row(text) }),
+            (Some(CaptionSource::Manual), Some(text), None) => {
+                Some(Reading::Manual { outcome: Outcome::from_row(text) })
+            }
             (Some(source), ..) => {
                 return Err(internal("decoding caption", format!("malformed '{source}' caption row")));
             }
@@ -113,11 +121,11 @@ async fn select_images(executor: impl SqliteExecutor<'_>, q: Query<'_>) -> Resul
                   i.created_at AS "created_at!",
                   (SELECT json_group_array(tag)
                    FROM (SELECT tag FROM tags WHERE image_hash = i.hash ORDER BY tag)) AS "tags!: String",
-                  c.source AS "caption_source?", c.engine AS "caption_engine?", c.text AS "caption_text?"
+                  COALESCE(m.source, o.source) AS "caption_source?", COALESCE(m.engine, o.engine) AS "caption_engine?",
+                  COALESCE(m.text, o.text) AS "caption_text?"
            FROM images i
-           LEFT JOIN captions c
-             ON c.image_hash = i.hash
-            AND c.source = (SELECT source FROM captions WHERE image_hash = i.hash ORDER BY source = 'manual' DESC LIMIT 1)
+           LEFT JOIN captions m ON m.image_hash = i.hash AND m.source = 'manual'
+           LEFT JOIN captions o ON o.image_hash = i.hash AND o.source = 'ocr' AND m.image_hash IS NULL
            WHERE (?1 IS NULL OR i.hash = ?1)
              AND (?2 IS NULL OR i.name = ?2 COLLATE NOCASE)
              AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.image_hash = i.hash AND t.tag = ?3))
@@ -219,13 +227,7 @@ impl Store {
 
     /// The newest change seq ever written, 0 for none. One indexed read.
     pub(crate) async fn head_seq(&self) -> Result<ChangeSeq> {
-        let seq = sqlx::query_scalar!(
-            r#"SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'changes'), 0) AS "seq!: i64""#
-        )
-        .fetch_one(&self.pool)
-        .await
-        .internal("loading changes")?;
-        Ok(ChangeSeq(seq.unsigned_abs()))
+        Ok(ChangeSeq(self.change_bounds().await?.1))
     }
 
     /// The oldest seq still in the log (if any) and the newest ever written (0 if none).

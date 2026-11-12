@@ -20,7 +20,7 @@ sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-toml_edit = "0.25.19"
+toml_edit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

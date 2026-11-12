@@ -366,12 +366,14 @@ impl Library {
         let mut tx = self.inner.store.begin_write().await?;
         let image = tx.resolve(&id).await?;
         let (changed, detail) = match &edit {
-            CaptionEdit::Ocr { outcome, engine } => {
-                (tx.put_caption(&image.hash, CaptionSource::Ocr, outcome, Some(engine)).await?, "ocr".to_owned())
-            }
-            CaptionEdit::Manual(outcome) => {
-                (tx.put_caption(&image.hash, CaptionSource::Manual, outcome, None).await?, "manual".to_owned())
-            }
+            CaptionEdit::Ocr { outcome, engine } => (
+                tx.put_caption(&image.hash, CaptionSource::Ocr, outcome, Some(engine)).await?,
+                CaptionSource::Ocr.to_string(),
+            ),
+            CaptionEdit::Manual(outcome) => (
+                tx.put_caption(&image.hash, CaptionSource::Manual, outcome, None).await?,
+                CaptionSource::Manual.to_string(),
+            ),
             CaptionEdit::Clear(source) => (tx.delete_caption(&image.hash, *source).await?, format!("cleared:{source}")),
         };
         if !changed {

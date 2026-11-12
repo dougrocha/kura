@@ -56,7 +56,7 @@ use nucleo_matcher::{
 use crate::{
     Image,
     changes::ChangeSeq,
-    error::Result,
+    error::{Result, ResultExt},
     store::{Query, Store},
 };
 
@@ -197,6 +197,8 @@ pub(crate) struct SearchIndex {
 struct Doc {
     image: Arc<Image>,
     meta: String,
+    /// The tags lowercased, for `#tag` prefixes.
+    tags_lower: Vec<String>,
     /// The caption folded char for char, empty when there is no text.
     caption: Vec<char>,
 }
@@ -213,7 +215,8 @@ impl SearchIndex {
                     .join(" ");
                 let caption =
                     image.caption().map_or_else(Vec::new, |r| r.outcome().text().chars().map(fold_char).collect());
-                Doc { image: Arc::new(image), meta, caption }
+                let tags_lower = image.tags().iter().map(|t| t.as_str().to_lowercase()).collect();
+                Doc { image: Arc::new(image), meta, tags_lower, caption }
             })
             .collect();
         Self { seq, docs, unread }
@@ -257,9 +260,7 @@ struct Scored {
 }
 
 fn score_doc(query: &SearchQuery, doc: &Doc, matcher: &mut Matcher, buf: &mut Vec<char>) -> Option<Scored> {
-    let tags = doc.image.tags();
-    let has_tags =
-        query.tag_prefixes.iter().all(|wanted| tags.iter().any(|tag| tag.as_str().to_lowercase().starts_with(wanted)));
+    let has_tags = query.tag_prefixes.iter().all(|wanted| doc.tags_lower.iter().any(|tag| tag.starts_with(wanted)));
     if !has_tags {
         return None;
     }
@@ -438,7 +439,9 @@ impl SearchCache {
             return Ok(index.clone());
         }
         let images = store.images(Query::default()).await?;
-        let index = Arc::new(SearchIndex::build(head, images));
+        let index = tokio::task::spawn_blocking(move || Arc::new(SearchIndex::build(head, images)))
+            .await
+            .internal("building the search index")?;
         *current = Some(index.clone());
         Ok(index)
     }
