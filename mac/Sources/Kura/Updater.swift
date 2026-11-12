@@ -3,27 +3,35 @@ import Observation
 import SwiftUI
 
 /// Notices when Kura.app is replaced on disk (`just install`) and relaunches
-/// into the new build: right away, or once Kura is hidden.
+/// into the new build, with Rex's flow: "Update available" and Download, a
+/// spinner while it downloads, then Relaunch (or, with "Relaunch when
+/// hidden" on, the next time Kura is hidden).
 @MainActor @Observable
 final class Updater {
     enum Phase: Equatable {
         case current
         /// After Check for Updates finds nothing; hides itself.
         case upToDate
+        /// A new build is on disk; Download is waiting for a click.
+        case available
         /// Pretend download, so it feels like a real update. Builds are local.
-        case downloading(Double)
+        case downloading
         case ready
         case waitingForIdle
         case relaunching
     }
 
     private(set) var phase = Phase.current
+    /// The toast was closed. The update keeps its phase; Check for Updates shows it again.
+    private(set) var isHidden = false
     /// `mac.relaunch_when_hidden` from the shared config; set by the app.
     @ObservationIgnored var relaunchWhenHidden: () -> Bool = { true }
 
     private let bundleURL = Bundle.main.bundleURL
     private let launchedBuild = Updater.build(at: Bundle.main.bundleURL)
-    private var found = false
+
+    /// A new build was seen on disk.
+    private var found: Bool { phase != .current && phase != .upToDate }
 
     func start() {
         guard launchedBuild != nil else { return }  // `swift run`: no bundle to watch
@@ -37,7 +45,7 @@ final class Updater {
         }
         Task {
             for await _ in NotificationCenter.default.notifications(named: NSApplication.didHideNotification)
-            where phase == .waitingForIdle {
+            where phase == .waitingForIdle || (phase == .ready && relaunchWhenHidden()) {
                 relaunch(activate: false)
             }
         }
@@ -46,44 +54,44 @@ final class Updater {
     /// Kura → Check for Updates…: shows the update if there is one (even after
     /// the toast was closed), or "Kura is up to date" for a moment.
     func checkForUpdates() {
-        switch phase {
-        case .current, .upToDate:
-            if found {
-                phase = .ready
-            } else if !checkDisk() {
-                phase = .upToDate
-                Task {
-                    try? await Task.sleep(for: .seconds(3))
-                    if phase == .upToDate { phase = .current }
-                }
-            }
-        default: break
+        isHidden = false
+        guard !found, !checkDisk() else { return }
+        phase = .upToDate
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if phase == .upToDate { phase = .current }
         }
     }
 
-    /// Hides the toast. The update stays found; Check for Updates brings it back.
-    func dismiss() {
-        if phase != .relaunching { phase = .current }
+    /// Download: a spinner for a moment (the new build is already on disk),
+    /// then Relaunch.
+    func download() {
+        guard phase == .available else { return }
+        phase = .downloading
+        Task {
+            try? await Task.sleep(for: .milliseconds(Int.random(in: 1200...2000)))
+            if phase == .downloading { phase = .ready }
+        }
     }
 
-    /// Starts the "download" when a different build is on disk.
+    /// Hides the toast. The update stays where it was.
+    func dismiss() {
+        if phase == .upToDate { phase = .current } else { isHidden = true }
+    }
+
+    /// Shows "Update available" when a different build is on disk.
     @discardableResult private func checkDisk() -> Bool {
         guard !found, let launchedBuild, let onDisk = Self.build(at: bundleURL), onDisk != launchedBuild else {
             return found
         }
-        found = true
-        Task {
-            for step in 0...40 {
-                phase = .downloading(Double(step) / 40)
-                try? await Task.sleep(for: .milliseconds(Int.random(in: 40...140)))
-            }
-            phase = relaunchWhenHidden() ? .waitingForIdle : .ready
-        }
+        phase = .available
+        isHidden = false
         return true
     }
 
     func relaunchWhenIdle() {
         phase = .waitingForIdle
+        isHidden = false
     }
 
     /// Waits for this process to exit, then opens the new bundle. Our server
@@ -126,20 +134,24 @@ struct UpdatePill: View {
 
     var body: some View {
         Group {
-            if updater.phase != .current {
+            if updater.phase != .current && !updater.isHidden {
                 HStack(spacing: 10) {
                     StatusIcon(phase: updater.phase)
                     Text(title)
                         .font(.system(size: 13, weight: .medium))
                         .contentTransition(.interpolate)
                         .lineLimit(1)
-                    if updater.phase == .ready {
-                        Button(optionHeld ? "Later" : "Relaunch") {
+                    if updater.phase == .available {
+                        PillButton(title: "Download") { updater.download() }
+                    } else if updater.phase == .ready {
+                        PillButton(title: optionHeld ? "Later" : "Relaunch") {
                             if optionHeld { updater.relaunchWhenIdle() } else { updater.relaunch() }
                         }
-                        .buttonStyle(.glassProminent)
-                        .controlSize(.small)
                         .help("Hold ⌥ to relaunch when Kura is hidden")
+                    } else if updater.phase == .waitingForIdle {
+                        // Waiting is the polite default, but you can always skip it.
+                        PillButton(title: "Relaunch") { updater.relaunch() }
+                            .help("Kura also relaunches by itself the next time you hide it (⌘H)")
                     }
                     if updater.phase != .relaunching && updater.phase != .upToDate {
                         Button { updater.dismiss() } label: {
@@ -168,7 +180,8 @@ struct UpdatePill: View {
 
     private var title: String {
         switch updater.phase {
-        case .current, .downloading: "Downloading update"
+        case .current, .available: "Kura update available"
+        case .downloading: "Downloading update…"
         case .upToDate: "Kura is up to date"
         case .ready: "Kura is ready to update"
         case .waitingForIdle: "Kura will relaunch when hidden"
@@ -177,21 +190,33 @@ struct UpdatePill: View {
     }
 }
 
-/// The round icon: a filling ring while downloading, then a solid dot.
+/// A quiet text button that matches the × beside it: same height, same grey
+/// fill, like Rex's toast (no accent color inside the pill).
+private struct PillButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .background(.quaternary, in: .capsule)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The round icon: a spinner while working, else a solid dot with a symbol.
 private struct StatusIcon: View {
     let phase: Updater.Phase
 
     var body: some View {
         ZStack {
             switch phase {
-            case .downloading(let progress):
-                Circle().stroke(.quaternary, lineWidth: 1.5)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(.primary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 0.12), value: progress)
-            case .relaunching:
+            case .downloading, .relaunching:
                 ProgressView().controlSize(.small)
             case .upToDate:
                 Circle().fill(.primary)

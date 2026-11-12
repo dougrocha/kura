@@ -190,7 +190,7 @@ private struct GeneralPane: View {
     }
 
     private func setting(_ key: String, _ value: Bool) -> Binding<Bool> {
-        Binding(get: { value }, set: { new in Task { await library.setConfig(key, to: new ? "true" : "false") } })
+        library.setting(key, value)
     }
 }
 
@@ -231,7 +231,7 @@ private struct LibraryPane: View {
                     }
                 } label: {
                     Text("Library folder")
-                    Text(config.library.map { $0 } ?? "Default: ~/Pictures/kura")
+                    Text(config.library ?? "Default: ~/Pictures/kura")
                 }
             } footer: {
                 Text("A chosen folder holds the images, database and previews together. Changing it restarts the server and doesn't move existing images.")
@@ -277,12 +277,7 @@ private struct UpdatesPane: View {
             if let config = library.config {
                 Section {
                     Toggle(
-                        isOn: Binding(
-                            get: { config.relaunchWhenHidden },
-                            set: { new in
-                                Task { await library.setConfig("mac.relaunch_when_hidden", to: new ? "true" : "false") }
-                            }
-                        )
+                        isOn: library.setting("mac.relaunch_when_hidden", config.relaunchWhenHidden)
                     ) {
                         Text("Install updates automatically")
                         Text("Kura relaunches into a new build once it's hidden.")
@@ -296,6 +291,7 @@ private struct UpdatesPane: View {
 
     private var status: String {
         switch updater.phase {
+        case .available: "An update is available"
         case .downloading: "Downloading an update"
         case .ready: "An update is ready"
         case .waitingForIdle: "Relaunches when hidden"
@@ -424,6 +420,12 @@ private struct ConfigErrorSection: View {
 }
 
 private func tildePath(_ path: String) -> String {
-    let home = NSHomeDirectory()
-    return path.hasPrefix(home + "/") || path == home ? "~" + path.dropFirst(home.count) : path
+    (path as NSString).abbreviatingWithTildeInPath
+}
+
+extension LibraryModel {
+    /// A toggle for a true/false key of the config file.
+    fileprivate func setting(_ key: String, _ value: Bool) -> Binding<Bool> {
+        Binding(get: { value }, set: { new in Task { await self.setConfig(key, to: new ? "true" : "false") } })
+    }
 }

@@ -37,13 +37,14 @@ struct AddTests {
         #expect(await NewImage.load(p) == .web(web, fallback: Self.gif))
     }
 
-    @Test func tiffOnlyIsConvertedToPNG() async throws {
+    /// Converted to PNG on upload (see `addsFilesAndBytesToARealServer`), not here.
+    @Test func tiffOnlyIsLoadedAsIs() async throws {
         let p = provider([(.tiff, Self.tiff)])
         guard case .data(let data, _) = await NewImage.load(p) else {
             Issue.record("expected image data")
             return
         }
-        #expect(data.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+        #expect(data == Self.tiff)
     }
 
     @Test func nonImagesAreSkipped() async {

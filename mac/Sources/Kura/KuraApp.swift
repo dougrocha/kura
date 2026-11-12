@@ -18,6 +18,9 @@ struct KuraApp: App {
                 Button("Check for Updates…") { appDelegate.updater.checkForUpdates() }
             }
             CommandGroup(replacing: .newItem) {
+                // The shortcut is global (it works from any app), so it's in the title,
+                // not a menu key equivalent.
+                Button("Quick Pick  \(HotKey.quickPick.label)") { appDelegate.launcher.show() }
                 Button("Add Images…") { appDelegate.library.requestAdd() }
                     .keyboardShortcut("o")
             }
@@ -64,6 +67,7 @@ struct ImageCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let library = LibraryModel()
     let updater = Updater()
+    lazy var launcher = LauncherPanel(launcher: Launcher(root: MemesPage(library: library)))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Under `swift run` there's no app bundle, so macOS treats the process
@@ -72,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         updater.relaunchWhenHidden = { [library] in library.config?.relaunchWhenHidden ?? true }
         updater.start()
+        if !launcher.registerHotKey() {
+            print("Kura: \(HotKey.quickPick.label) is taken by another app; Quick Pick is in the File menu")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

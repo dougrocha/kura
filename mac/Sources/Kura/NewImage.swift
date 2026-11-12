@@ -20,7 +20,7 @@ enum NewImage: Sendable, Equatable {
         }
     }
 
-    /// The formats the server stores; anything else is converted to PNG first.
+    /// The formats the server stores; `KuraClient.add` converts anything else to PNG.
     static let storedTypes: [UTType] = [.png, .jpeg, .gif, .webP]
 
     /// What drops and pastes may carry. File URLs before web URLs before raw images.
@@ -28,12 +28,6 @@ enum NewImage: Sendable, Equatable {
 
     static func isStored(_ type: UTType) -> Bool {
         storedTypes.contains { type.conforms(to: $0) }
-    }
-
-    /// Re-encode any image AppKit can read (TIFF, HEIC, BMP...) as PNG.
-    static func png(from data: Data) -> Data? {
-        guard let rep = NSBitmapImageRep(data: data) else { return nil }
-        return rep.representation(using: .png, properties: [:])
     }
 
     /// The images in a drop or paste, in order. Items that aren't images are skipped.
@@ -64,13 +58,12 @@ enum NewImage: Sendable, Equatable {
     }
 
     /// The provider's image, preferring a format the server stores as is
-    /// (AppKit adds TIFF to nearly every image drag).
+    /// (AppKit adds TIFF to nearly every image drag). Other formats are
+    /// converted when uploaded, off the main actor.
     @MainActor private static func imageData(_ provider: NSItemProvider) async -> Data? {
         let types = provider.registeredContentTypes.filter { $0.conforms(to: .image) }
-        guard let type = types.first(where: isStored) ?? types.first,
-            let data = try? await data(provider, type)
-        else { return nil }
-        return isStored(type) ? data : png(from: data)
+        guard let type = types.first(where: isStored) ?? types.first else { return nil }
+        return try? await data(provider, type)
     }
 
     @MainActor private static func data(_ provider: NSItemProvider, _ type: UTType) async throws -> Data {
@@ -87,15 +80,10 @@ enum NewImage: Sendable, Equatable {
 }
 
 /// How an add went, as one line for the notice.
-struct AddSummary: Equatable {
+struct AddSummary {
     var added: [String] = []
     var existing: [String] = []
     var failed: [(label: String, reason: String)] = []
-
-    static func == (a: Self, b: Self) -> Bool {
-        a.added == b.added && a.existing == b.existing
-            && a.failed.map(\.label) == b.failed.map(\.label) && a.failed.map(\.reason) == b.failed.map(\.reason)
-    }
 
     var message: String {
         var parts: [String] = []

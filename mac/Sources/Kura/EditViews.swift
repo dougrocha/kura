@@ -52,7 +52,7 @@ struct RenameSheet: View {
         Task {
             failure = await library.rename(image, to: trimmed)
             saving = false
-            if failure == nil || failure == .gone { dismiss() }
+            if failure == nil { dismiss() }
         }
     }
 }
@@ -151,7 +151,7 @@ struct TagBar: View {
         }
         Task {
             if let result = await library.addTag(image, tag) {
-                failure = result == .gone ? nil : result.message()
+                failure = result.message()
             } else {
                 cancel()
             }
@@ -160,8 +160,7 @@ struct TagBar: View {
 
     private func remove(_ tag: String) {
         Task {
-            let result = await library.removeTag(image, tag)
-            failure = result == .gone ? nil : result?.message()
+            failure = await library.removeTag(image, tag)?.message()
         }
     }
 }
@@ -224,8 +223,7 @@ struct CaptionSection: View {
 
     private func run(_ action: @escaping () async -> EditFailure?) {
         Task {
-            let result = await action()
-            failure = result == .gone ? nil : result?.message()
+            failure = await action()?.message()
         }
     }
 }
@@ -279,7 +277,7 @@ struct CaptionEditSheet: View {
         Task {
             failure = await library.setCaption(image, to: text)
             saving = false
-            if failure == nil || failure == .gone { dismiss() }
+            if failure == nil { dismiss() }
         }
     }
 }

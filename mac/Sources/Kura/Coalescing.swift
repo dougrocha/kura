@@ -19,20 +19,13 @@ final class Coalescer {
         dirty = true
         guard task == nil else { return }
         task = Task { [weak self] in
-            while let self, self.dirty, !Task.isCancelled {
+            while let self, self.dirty {
                 try? await Task.sleep(for: self.interval)
-                if Task.isCancelled { return }
                 self.dirty = false
                 await self.action()
             }
-            if !Task.isCancelled { self?.task = nil }
+            self?.task = nil
         }
-    }
-
-    func cancel() {
-        task?.cancel()
-        task = nil
-        dirty = false
     }
 
     /// Wait until nothing is pending.

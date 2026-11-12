@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
@@ -16,18 +17,25 @@ struct KuraImage: Decodable, Identifiable, Hashable, Sendable {
     var caption: KuraCaption? = nil
 
     var id: String { hash }
+
+    /// The line under the name: why it matched, else its tags.
+    func subtitle(_ snippet: Snippet?) -> AttributedString? {
+        if let snippet { return snippet.attributed }
+        return tags.isEmpty ? nil : AttributedString(tags.joined(separator: ", "))
+    }
 }
 
 /// The text in an image (kura-server's `wire::Caption`).
 struct KuraCaption: Decodable, Hashable, Sendable {
     /// Empty means the image was read and has no text.
     let text: String
-    /// `ocr` (read on this Mac) or `manual` (typed by a person, wins over ocr).
+    /// A `CaptionSource`'s raw value: `ocr` (read on this Mac) or `manual`
+    /// (typed by a person, wins over ocr). A string, so a new source decodes.
     let source: String
     /// The recognizer that wrote an ocr caption, e.g. `vision:1`.
     let engine: String?
 
-    var isManual: Bool { source == "manual" }
+    var isManual: Bool { source == CaptionSource.manual.rawValue }
 }
 
 enum CaptionSource: String, Sendable {
@@ -42,6 +50,11 @@ struct SearchResponse: Decodable, Equatable, Sendable {
     let images: Int
     /// How many of them have no caption yet.
     let unread: Int
+
+    /// For hits where the image's text matched: the part of it to show.
+    var snippets: [String: Snippet] {
+        Dictionary(hits.compactMap { hit in hit.snippet.map { (hit.hash, $0) } }) { first, _ in first }
+    }
 }
 
 struct SearchHit: Decodable, Equatable, Sendable {
@@ -293,7 +306,7 @@ struct KuraClient: Sendable {
         var body = data
         var fileName = fileName
         if !Self.isStored(data) {
-            guard let png = NewImage.png(from: data) else {
+            guard let png = Self.png(from: data) else {
                 throw KuraError(code: "unsupported_format", message: "Kura stores PNG, JPEG, GIF and WebP images")
             }
             body = png
@@ -302,6 +315,11 @@ struct KuraClient: Sendable {
         var request = uploadRequest(fileName: fileName)
         request.httpMethod = "POST"
         return try decodeAdded(try await URLSession.shared.upload(for: request, from: body))
+    }
+
+    /// Re-encode any image AppKit can read (TIFF, HEIC, BMP...) as PNG.
+    private static func png(from data: Data) -> Data? {
+        NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
     }
 
     /// The server sniffs the first bytes; so do we, to know when to convert.

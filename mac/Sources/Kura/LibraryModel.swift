@@ -9,11 +9,10 @@ import Observation
 @Observable
 final class LibraryModel {
     private(set) var client: KuraClient?
-    private(set) var images: [KuraImage] = [] {
-        didSet { index = Dictionary(images.enumerated().map { ($1.hash, $0) }, uniquingKeysWith: { a, _ in a }) }
-    }
+    /// Set through `replaceImages`, which keeps `index` in step. `patch`
+    /// writes in place: hashes and positions don't change, so neither does `index`.
+    private(set) var images: [KuraImage] = []
     private(set) var error: String?
-    private(set) var isLoading = false
     /// Connected to the server's change feed, so the list updates by itself.
     private(set) var isLive = false
     var selection: KuraImage.ID?
@@ -59,6 +58,8 @@ final class LibraryModel {
     /// The ranked hashes of the last search; nil shows every image.
     @ObservationIgnored private var hitOrder: [String]?
     @ObservationIgnored private var index: [String: Int] = [:]
+    /// What gets copied, so Quick Pick shows the memes you use first.
+    @ObservationIgnored let usage = Usage()
     @ObservationIgnored private lazy var searches = SearchRunner { [weak self] result in
         self?.finishSearch(result)
     }
@@ -79,6 +80,11 @@ final class LibraryModel {
 
     var selected: KuraImage? {
         visibleImages.first { $0.id == selection }
+    }
+
+    /// Any loaded image, by hash.
+    func image(hash: String) -> KuraImage? {
+        index[hash].map { images[$0] }
     }
 
     /// The visible image among `ids` (what a context menu or double-click acts on).
@@ -107,7 +113,7 @@ final class LibraryModel {
         switch result {
         case .success(let response):
             hitOrder = response.hits.map(\.hash)
-            snippets = Dictionary(response.hits.compactMap { hit in hit.snippet.map { (hit.hash, $0) } }) { first, _ in first }
+            snippets = response.snippets
             unreadCount = response.unread
             searchError = nil
             rebuildVisible()
@@ -121,7 +127,7 @@ final class LibraryModel {
     /// the reload that brings it re-runs the search), and keep the selection.
     private func rebuildVisible() {
         if let hitOrder {
-            visibleImages = hitOrder.compactMap { index[$0].map { images[$0] } }
+            visibleImages = hitOrder.compactMap(image(hash:))
         } else {
             visibleImages = images
         }
@@ -158,6 +164,7 @@ final class LibraryModel {
             // A newer copy started while this one downloaded: it wins.
             guard generation == copyGeneration else { return false }
             try Pasteboard.write(data, of: image)
+            usage.record(image.hash)
             show("Copied \(image.name)")
             return true
         } catch {
@@ -183,8 +190,8 @@ final class LibraryModel {
     //
     // Each edit returns nil when it worked and the failure otherwise, for the
     // sheet or bar that asked to show. None of them touches `error`, which
-    // replaces the whole detail pane. Only "it's gone" is handled here: say so
-    // and reload.
+    // replaces the whole detail pane. "It's gone" is handled here (say so and
+    // reload) and returns nil, so the views never see it.
 
     func rename(_ image: KuraImage, to name: String) async -> EditFailure? {
         await edit { try await $0.rename(image.hash, to: name) }
@@ -226,7 +233,10 @@ final class LibraryModel {
             return nil
         } catch {
             let failure = EditFailure(error)
-            if failure == .gone { await imageGone() }
+            guard failure != .gone else {
+                await imageGone()
+                return nil
+            }
             return failure
         }
     }
@@ -263,7 +273,7 @@ final class LibraryModel {
             }
             show("\(image.name) was already deleted")
         }
-        images.removeAll { $0.hash == image.hash }
+        replaceImages(images.filter { $0.hash != image.hash })
         rebuildVisible()
     }
 
@@ -384,18 +394,21 @@ final class LibraryModel {
         serverStartedAt = nil
         isLive = false
         error = nil
-        images = []
+        replaceImages([])
         captions.cancel()
         refreshVisible()
         await connect()
     }
 
+    private func replaceImages(_ new: [KuraImage]) {
+        images = new
+        index = Dictionary(new.enumerated().map { ($1.hash, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
     func load() async {
         guard let client else { return }
-        isLoading = true
-        defer { isLoading = false }
         do {
-            images = try await client.images()
+            replaceImages(try await client.images())
             error = nil
             refreshVisible()
             captions.reconcile(images, backend: client)

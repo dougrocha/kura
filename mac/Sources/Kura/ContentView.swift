@@ -189,23 +189,13 @@ struct ImageRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AsyncImage(url: library.client?.thumbnailURL(image, size: "grid")) { thumb in
-                thumb.resizable().scaledToFill()
-            } placeholder: {
-                Color.secondary.opacity(0.15)
-            }
-            .frame(width: 40, height: 40)
-            .clipShape(.rect(cornerRadius: 8))
+            Thumbnail(url: library.client?.thumbnailURL(image, size: "grid"), cornerRadius: 8)
+                .frame(width: 40, height: 40)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(image.name).lineLimit(1)
-                if let snippet = library.snippets[image.id] {
-                    Text(snippet.attributed)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else if !image.tags.isEmpty {
-                    Text(image.tags.joined(separator: ", "))
+                if let subtitle = image.subtitle(library.snippets[image.id]) {
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -216,23 +206,53 @@ struct ImageRow: View {
     }
 }
 
+/// A square-cropped thumbnail, grey while it loads.
+struct Thumbnail: View {
+    let url: URL?
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        AsyncImage(url: url) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            Color.secondary.opacity(0.15)
+        }
+        .clipShape(.rect(cornerRadius: cornerRadius))
+    }
+}
+
 struct ImageDetail: View {
     @Environment(LibraryModel.self) private var library
     let image: KuraImage
+    /// The original file of an animation, once downloaded: thumbnails are
+    /// stills, so GIFs play from the file itself.
+    @State private var animation: (hash: String, data: Data)?
 
     var body: some View {
         VStack(spacing: 12) {
-            AsyncImage(url: library.client?.thumbnailURL(image, size: "preview")) { phase in
-                switch phase {
-                case .success(let preview):
-                    preview.resizable().scaledToFit()
-                case .failure:
-                    ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
-                default:
-                    ProgressView()
+            Group {
+                if let animation, animation.hash == image.hash {
+                    AnimatedImage(data: animation.data)
+                } else {
+                    AsyncImage(url: library.client?.thumbnailURL(image, size: "preview")) { phase in
+                        switch phase {
+                        case .success(let preview):
+                            preview.resizable().scaledToFit()
+                        case .failure:
+                            ContentUnavailableView("Can't Load Preview", systemImage: "exclamationmark.triangle")
+                        default:
+                            ProgressView()
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: image.hash) {
+                guard image.isAnimatable, let client = library.client,
+                    let data = try? await client.file(image), !Task.isCancelled
+                else { return }
+                animation = (image.hash, data)
+            }
 
             CaptionSection(image: image).id(image.hash)
         }
@@ -244,5 +264,43 @@ struct ImageDetail: View {
             TagBar(image: image).id(image.hash).padding(14)
         }
         .navigationTitle(image.name)
+    }
+}
+
+extension KuraImage {
+    /// Formats that can move. A still WebP plays as a still, which is fine.
+    var isAnimatable: Bool { mimeType == "image/gif" || mimeType == "image/webp" }
+}
+
+/// Plays an animated image (AppKit animates GIFs and WebPs; SwiftUI's Image
+/// shows only the first frame), scaled to fit like `scaledToFit`.
+struct AnimatedImage: NSViewRepresentable {
+    let data: Data
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.animates = true
+        view.isEditable = false
+        // Let SwiftUI size it; the image's own size mustn't push the layout.
+        for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+            view.setContentCompressionResistancePriority(.defaultLow, for: axis)
+            view.setContentHuggingPriority(.defaultLow, for: axis)
+        }
+        return view
+    }
+
+    /// Only on new data: setting the image again would restart the animation
+    /// and decode every frame again on each re-render.
+    func updateNSView(_ view: NSImageView, context: Context) {
+        guard context.coordinator.data != data else { return }
+        context.coordinator.data = data
+        view.image = NSImage(data: data)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var data: Data?
     }
 }

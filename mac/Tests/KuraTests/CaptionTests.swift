@@ -377,9 +377,9 @@ struct CaptionerTests {
     }
 
     @Test @MainActor func bigImagesAreScaledDownButSmallOnesAreNot() {
-        let big = Captioner.decode(Self.png(width: 3200, height: 100, text: nil))
+        let big = Captioner.frames(Self.png(width: 3200, height: 100, text: nil)).first
         #expect(big.map { max($0.width, $0.height) } == 2560)
-        let small = Captioner.decode(Self.png(width: 300, height: 100, text: nil))
+        let small = Captioner.frames(Self.png(width: 300, height: 100, text: nil)).first
         #expect(small?.width == 300)
     }
 }

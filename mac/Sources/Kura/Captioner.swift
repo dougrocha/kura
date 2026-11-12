@@ -85,14 +85,7 @@ struct Captioner: Sendable {
         return indices.compactMap { decode(source, at: $0) }
     }
 
-    /// Frame 0, upright, at most `maxPixels` on the long side (never enlarged).
-    static func decode(_ data: Data) -> CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0 else {
-            return nil
-        }
-        return decode(source, at: 0)
-    }
-
+    /// One frame, upright, at most `maxPixels` on the long side (never enlarged).
     private static func decode(_ source: CGImageSource, at index: Int) -> CGImage? {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
