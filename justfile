@@ -112,6 +112,9 @@ fmt:
 
 # ---------------------------------------------------------------- database
 
+# sqlx-cli reads this; dev.db is only used to check queries while compiling
+export DATABASE_URL := "sqlite://dev.db"
+
 # Apply migrations to dev.db, the database sqlx checks queries against
 migrate:
     cargo sqlx migrate run --source kura-core/migrations
